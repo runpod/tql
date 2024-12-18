@@ -12,6 +12,7 @@ TQL is an internal SQL templating engine designed to provide type safety when sc
 - Zero external dependencies beyond the Go standard library
 - Compile-time validation of struct field tags and query parameters
 - Automatic handling of NULL values through pointer types
+- Support for both *sql.DB and *sql.Tx
 
 ## Usage Example
 
@@ -38,9 +39,42 @@ if err != nil {
     return err
 }
 
-// Execute the query directly
+// Execute the query with automatic preparation
 db, _ := sql.Open("sqlite", "dsn")
-results, err := query.Execute(db, 1)
+results, err := tql.Query(query, db, 1)
+
+// Or prepare explicitly for reuse
+prepared, err := tql.Prepare(query, db)
+if err != nil {
+    return err
+}
+results, err = tql.Query(prepared, db, 1)
+```
+
+## Context Support
+
+TQL provides context-aware variants of its core functions:
+
+```go
+ctx := context.Background()
+prepared, err := tql.PrepareContext(query, ctx, db)
+results, err := tql.QueryContext(prepared, ctx, db, 1)
+```
+
+The prepared statement will be automatically closed when the context is cancelled.
+
+## Transaction Support
+
+TQL works seamlessly with both database connections and transactions:
+
+```go
+tx, err := db.Begin()
+if err != nil {
+    return err
+}
+defer tx.Rollback()
+
+results, err := tql.Query(query, tx, 1)
 ```
 
 ## Advanced Features
@@ -67,120 +101,69 @@ query, err := tql.New[Results](`
 `)
 ```
 
-
-### Template Parameters
-TQL supports complex templating with struct parameters:
-
-```go
-type Params struct {
-    Select string
-    Where  string
-}
-
-query, err := tql.New[Results](`
-    SELECT {{ .Select }} 
-    FROM User 
-    {{ with not .Where}} WHERE {{ .Where }} {{end}}
-`)
-
-// Prepare with parameters
-query.Prepare(db, Params{
-    Select: "User.uuid, User.name",
-    Where: "User.id = 1",
-})
-```
-
-### NULL Handling
-TQL provides flexible NULL handling through pointer types and sql.Null* types:
-
-```go
-type User struct {
-    ID        int             `db:"id"`
-    Name      *sql.NullString `db:"name"`    // Using sql.NullString
-    UUID      *sql.NullString `db:"uuid"`
-    CreatedAt *time.Time      `db:"createdAt"` // Using pointer for nullable time
-}
-```
-
-## Field Mapping
-
-TQL automatically maps database columns to struct fields using the following rules:
-
-1. By default, it uses the struct field name
-2. Custom column names can be specified using the `db` tag
-3. Nested structs are supported using dot notation (e.g., `User.id`, `Profile.bio`)
-4. Fields can be excluded using the `tql` tag with the `omit` parameter
-
-Example:
-```go
-type User struct {
-    ID        int       `db:"id"`
-    Name      string    `db:"name"`
-    CreatedAt time.Time `db:"createdAt"`
-}
-
-type Results struct {
-    User User `tql:"omit=createdAt"` // The createdAt field will be excluded
-}
-```
-
-## Template Functions
+### Template Functions
 
 You can extend the template functionality using custom functions:
 
 ```go
-funcs := tql.Funcs{
+funcs := tql.FuncMap{
     "uuid": func() string { 
         return "123" 
     },
 }
 
-query, err := tql.WithFuncs[Results](funcs, `
+query, err := tql.New[Results](`
     INSERT INTO User (name, id, uuid) 
     VALUES (?, ?, '{{ uuid }}')
-`)
+`, funcs)
 ```
 
-## Error Handling
+### Error Handling
 
 TQL provides detailed error types for common scenarios:
 
-- `ErrNilQuery`: Attempted to execute a nil query
-- `ErrNilTemplate`: Template initialization failed
-- `ErrPreparingQuery`: Error during query preparation
-- `ErrExecutingQuery`: Error during query execution
-- `ErrParsingQuery`: Error parsing the SQL template
-
-## Best Practices
-
-1. Use struct embedding to organize related fields
-2. Use pointer types for nullable columns
-3. Always prepare queries before execution for better performance
-4. Use meaningful struct and field names that match your database schema
-5. Leverage the `db` tag for custom column mappings
-
-## Limitations
-
-- Currently supports struct types only for result mapping
-- Field names must be unique across nested structs
-- Template must reference all fields that should be scanned
-
-## Contributing
-
-Contributions are welcome! Please ensure that any pull requests include appropriate tests and documentation.
+```go
+var (
+    ErrNilQuery        = errors.New("query is nil")
+    ErrNilTemplate     = errors.New("template is nil")
+    ErrPreparingQuery  = errors.New("failed to prepare query")
+    ErrExecutingQuery  = errors.New("failed to execute query")
+    ErrParsingQuery    = errors.New("failed to parse sql template")
+    ErrParsingTemplate = errors.New("failed to parse template")
+    ErrInvalidType     = errors.New("failed to create query type parameter is invalid")
+)
+```
 
 ## Performance
 
-TQL is designed to be performant while providing type safety. Here's a benchmark comparing TQL with native SQL prepared statements:
-
-```
-BenchmarkPrepared/Native-10    	   12345 ns/op
-BenchmarkPrepared/TQL-10      	   13456 ns/op
+TQL is designed to be performant while providing type safety. Here are the benchmark results comparing TQL with native SQL operations:
+```bash
+go test -bench=.
 ```
 
-While TQL adds a small overhead for type safety and automatic scanning, the difference is minimal in most real-world applications. The benefits of compile-time type checking and reduced potential for runtime errors often outweigh this small performance cost.
+```bash
+goos: darwin
+goarch: arm64
+cpu: Apple M4 Pro
+BenchmarkTQLCreation-14                  1,134,435              1,068 ns/op
+BenchmarkUnprepared/Native-14        1,000,000,000              0.02 ns/op
+BenchmarkUnprepared/TQL-14                276,362              4,186 ns/op
+BenchmarkPrepared/Native-14               300,410              3,898 ns/op
+BenchmarkPrepared/TQL-14                  273,488              4,193 ns/op
+```
+
+Key observations:
+1. Query creation has minimal overhead at ~1µs per operation
+2. Prepared statements show similar performance between TQL (~4.2µs) and native SQL (~3.9µs)
+3. For unprepared queries, native SQL is significantly faster, suggesting you should use prepared statements with TQL
 
 For optimal performance:
 1. Use `Prepare()` for queries that will be executed multiple times
-2. Consider using native SQL for extremely performance-critical simple queries
+2. Cache prepared statements when possible
 3. Profile your specific use case to make informed decisions
+
+The small overhead added by TQL is typically justified by the benefits of:
+- Compile-time type checking
+- Automatic field mapping
+- Reduced potential for runtime errors
+- Improved maintainability

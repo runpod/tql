@@ -1,6 +1,7 @@
 package tql
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"log/slog"
@@ -58,7 +59,7 @@ func TestSimple(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := query.Execute(db, 1)
+	results, err := Query(query, db, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,10 +86,11 @@ func TestWithNilDB(t *testing.T) {
 		Account
 	}
 	query, err := New[UserAccount](`SELECT * FROM User WHERE User.id =`)
+	nilDb := (*sql.DB)(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := query.Prepare(nil); !errors.Is(err, ErrPreparingQuery) {
+	if _, err := Prepare(query, nilDb); !errors.Is(err, ErrPreparingQuery) {
 		t.Fatal("expected error to be ErrPreparingQuery, got", err)
 	}
 }
@@ -103,7 +105,7 @@ func TestJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := query.Execute(db, 1)
+	results, err := Query(query, db, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,10 +129,10 @@ func TestWithTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := query.Prepare(db, time.Now().Format("2006-01-02 15:04:05")); err != nil {
+	if _, err := Prepare(query, db, time.Now().Format("2006-01-02 15:04:05")); err != nil {
 		t.Fatal(err)
 	}
-	results, err := query.Execute(db)
+	results, err := Query(query, db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,18 +144,18 @@ func TestWithTemplate(t *testing.T) {
 func TestWithNilQuery(t *testing.T) {
 	db := mock(t)
 	var nilQuery *query[any]
-	if _, err := nilQuery.Prepare(db, time.Now().Format("2006-01-02 15:04:05")); !errors.Is(err, ErrPreparingQuery) {
+	if _, err := Prepare(nilQuery, db, time.Now().Format("2006-01-02 15:04:05")); !errors.Is(err, ErrPreparingQuery) {
 		t.Fatal(err)
 	}
-	if _, err := nilQuery.Execute(db); !errors.Is(err, ErrExecutingQuery) {
+	if _, err := Query(nilQuery, db); !errors.Is(err, ErrExecutingQuery) {
 		t.Fatal(err)
 	}
 }
 
 func TestWithNilTemplate(t *testing.T) {
 	db := mock(t)
-	queryWithNilTemplate := query[any]{}
-	if _, err := queryWithNilTemplate.Prepare(db); !errors.Is(err, ErrNilTemplate) {
+	queryWithNilTemplate := &query[any]{}
+	if _, err := Prepare(queryWithNilTemplate, db); !errors.Is(err, ErrNilTemplate) {
 		t.Fatal(err)
 	}
 }
@@ -163,14 +165,14 @@ func TestWithFunctions(t *testing.T) {
 	type Results struct {
 		User User `tql:"omit=createdAt" db:"user"`
 	}
-	query, err := WithFuncs[Results](Funcs{"uuid": func() string { return "123" }}, `INSERT INTO User (name, id, uuid) VALUES (?, ?, '{{ uuid }}')`)
+	query, err := New[Results](`INSERT INTO User (name, id, uuid) VALUES (?, ?, '{{ uuid }}')`, FuncMap{"uuid": func() string { return "123" }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := query.Prepare(db); err != nil {
+	if _, err := Prepare(query, db); err != nil {
 		t.Fatal(err)
 	}
-	results, err := query.Execute(db, "Billy Joel", 2)
+	results, err := Query(query, db, "Billy Joel", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,10 +195,10 @@ func TestComplex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := query.Prepare(db, Params{Select: "User.id, User.name", Where: "User.id = 1"}); err != nil {
+	if _, err := Prepare(query, db, Params{Select: "User.id, User.name", Where: "User.id = 1"}); err != nil {
 		t.Fatal(err)
 	}
-	results, err := query.Execute(db)
+	results, err := Query(query, db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +220,7 @@ func TestSelectAll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := query.Execute(db)
+	results, err := Query(query, db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,7 +242,7 @@ func TestSelectAllFromTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := query.Execute(db)
+	results, err := Query(query, db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,6 +254,54 @@ func TestSelectAllFromTable(t *testing.T) {
 	}
 	if results[0].Account.Id != 2 {
 		t.Fatal("expected id 2, got", results[0].Account.Id)
+	}
+}
+
+func TestWithTransaction(t *testing.T) {
+	db := mock(t)
+	tx, err := db.Begin()
+	defer tx.Rollback()
+	if err != nil {
+		t.Fatal(err)
+	}
+	type Results struct {
+		User User
+	}
+	query, err := New[Results](`SELECT User.id, User.name, User.createdAt FROM User where User.id = ?`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := Query(query, tx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].User.Id != 1 {
+		t.Fatal("expected id 1, got", results[0].User.Id)
+	}
+
+}
+
+func TestCleanupWithContext(t *testing.T) {
+	db := mock(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	type Results struct {
+		User User
+	}
+	query, err := New[Results](`SELECT User.id, User.name, User.createdAt FROM User where User.id = ?`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareContext(query, ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	time.Sleep(1 * time.Millisecond)
+	if prepared.stmt != nil {
+		t.Fatal("expected stmt to be nil, got", prepared.stmt, query.stmt)
 	}
 }
 
@@ -280,13 +330,13 @@ func BenchmarkUnprepared(b *testing.B) {
 		}
 	})
 	b.Run("TQL", func(b *testing.B) {
-		query, err := Must[Results](`SELECT User.id, User.name, User.createdAt FROM User where User.id = ?`).Prepare(db)
+		query, err := Prepare(Must[Results](`SELECT User.id, User.name, User.createdAt FROM User where User.id = ?`), db)
 		if err != nil {
 			b.Fatal(err)
 		}
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, err := query.Execute(db, 1)
+			_, err := Query(query, db, 1)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -326,14 +376,14 @@ func BenchmarkPrepared(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		prepared, err := query.Prepare(db)
+		prepared, err := Prepare(query, db)
 		if err != nil {
 			b.Fatal(err)
 		}
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if _, err := prepared.Execute(db, 1); err != nil {
+			if _, err := Query(prepared, db, 1); err != nil {
 				b.Fatal(err)
 			}
 		}

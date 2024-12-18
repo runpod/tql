@@ -4,6 +4,7 @@ package tql
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"errors"
 	"iter"
@@ -26,19 +27,23 @@ var (
 	selectAllRegex = regexp.MustCompile(`(?is)^\s*SELECT\s+(.*?)\s+FROM\b`)
 )
 
+// FuncMap is an alias for template.FuncMap to provide custom template functions
+type FuncMap template.FuncMap
+
 // Query is the interface for executing SQL queries with type safety
-type Query[T any] interface {
+type TQ[T any] interface {
 	Execute(db *sql.DB, data ...any) ([]T, error)
-	Prepare(db *sql.DB, data ...any) (*Query[T], error)
+	Prepare(db *sql.DB, data ...any) (*TQ[T], error)
 }
 
-// Funcs is an alias for template.FuncMap to provide custom template functions
-type Funcs template.FuncMap
+type Queryable interface {
+	*sql.DB | *sql.Tx
+}
 
 // query implements the Query interface with template and statement preparation
 type query[T any] struct {
-	template *template.Template
 	stmt     *sql.Stmt
+	template *template.Template
 	indices  [][]int
 }
 
@@ -51,6 +56,9 @@ var (
 
 	// ErrPreparingQuery is returned when query preparation fails
 	ErrPreparingQuery = errors.New("failed to prepare query")
+
+	// ErrInvalidQueryable is returned when the queryable is not a valid type
+	ErrInvalidQueryable = errors.New("invalid queryable")
 
 	// ErrExecutingQuery is returned when query execution fails
 	ErrExecutingQuery = errors.New("failed to execute query")
@@ -68,27 +76,26 @@ var (
 	ErrInvalidType = errors.New("failed to create query type parameter is invalid")
 )
 
-// WithFuncs creates a new query with custom template functions
-func WithFuncs[S any](funcs map[string]any, sql string) (*query[S], error) {
+// defaultFuncs contains the default template functions
+var defaultFuncs = FuncMap{}
+
+// New creates a new query with default template functions
+func New[S any](sqlTemplate string, maybeFuncs ...FuncMap) (*query[S], error) {
+	funcs := defaultFuncs
+	if len(maybeFuncs) > 0 {
+		funcs = maybeFuncs[0]
+	}
 	var s S
 	if reflect.ValueOf(s).Kind() != reflect.Struct {
 		log.Error("a struct is required", "received", s)
 		return nil, ErrInvalidType
 	}
-	tmpl, err := template.New("sql").Funcs(funcs).Parse(sql)
+	tmpl, err := template.New("sql").Funcs(template.FuncMap(funcs)).Parse(sqlTemplate)
 	if err != nil {
 		log.Error("failed to create query with functions", "error", err)
 		return nil, errors.Join(ErrParsingTemplate, err)
 	}
 	return &query[S]{template: tmpl}, nil
-}
-
-// defaultFuncs contains the default template functions
-var defaultFuncs = template.FuncMap{}
-
-// New creates a new query with default template functions
-func New[S any](sqlTemplate string) (*query[S], error) {
-	return WithFuncs[S](defaultFuncs, sqlTemplate)
 }
 
 // Must creates a new query and panics if an error occurs
@@ -98,6 +105,121 @@ func Must[S any](sqlTemplate string) *query[S] {
 		panic(err)
 	}
 	return q
+}
+
+func Query[T any, Q Queryable](query *query[T], db Q, data ...any) ([]T, error) {
+	return QueryContext(query, context.Background(), db, data...)
+}
+
+func QueryContext[T any, Q Queryable](query *query[T], ctx context.Context, txOrDb Q, data ...any) ([]T, error) {
+	results := []T{}
+	if query == nil {
+		log.Error("Execute called on a nil query", "error", ErrNilQuery)
+		return results, errors.Join(ErrExecutingQuery, ErrNilQuery)
+	}
+	var err error
+	// this query hasn't been prepared yet
+	if query.stmt == nil {
+		// prepare the query
+		if query, err = PrepareContext(query, ctx, txOrDb); err != nil {
+			return results, errors.Join(ErrExecutingQuery, err)
+		}
+
+	}
+	var scanDest T
+	scanDestValue := reflect.ValueOf(&scanDest).Elem()
+	fields := []any{}
+	for _, fieldIndex := range query.indices {
+		field := scanDestValue.FieldByIndex(fieldIndex)
+		fields = append(fields, field.Addr().Interface())
+	}
+
+	rows, err := query.stmt.QueryContext(ctx, data...)
+	if err != nil {
+		return results, errors.Join(ErrExecutingQuery, err)
+	}
+	for rows.Next() {
+		err := rows.Scan(fields...)
+		if err != nil {
+			return results, errors.Join(ErrExecutingQuery, err)
+		}
+		results = append(results, scanDest)
+	}
+	return results, nil
+}
+
+func ExecContext[T any, Q Queryable](query *query[T], ctx context.Context, db Q, data ...any) (sql.Result, error) {
+	if query == nil {
+		log.Error("Execute called on a nil query", "error", ErrNilQuery)
+		return nil, errors.Join(ErrExecutingQuery, ErrNilQuery)
+	}
+	if query.stmt == nil {
+		var err error
+		if query, err = PrepareContext(query, ctx, db); err != nil {
+			return nil, errors.Join(ErrExecutingQuery, err)
+		}
+	}
+	return query.stmt.ExecContext(ctx, data...)
+}
+
+func Exec[T any, Q Queryable](query *query[T], db Q, data ...any) (sql.Result, error) {
+	return ExecContext(query, context.Background(), db, data...)
+}
+
+func PrepareContext[T any, Q Queryable](tqlQuery *query[T], ctx context.Context, txOrDb Q, data ...any) (*query[T], error) {
+	// make sure the query is not nil
+	if tqlQuery == nil {
+		log.Error("Prepare called on a nil query")
+		return nil, errors.Join(ErrPreparingQuery, ErrNilQuery)
+	}
+	if tqlQuery.template == nil {
+		// this should never happen but just in case we will check it anyway
+		log.Error("Prepare called with a nil template")
+		return tqlQuery, errors.Join(ErrPreparingQuery, ErrNilTemplate)
+	}
+	if txOrDb == nil {
+		log.Error("Prepare called with a nil tx or db")
+		return nil, errors.Join(ErrPreparingQuery, ErrPreparingQuery)
+	}
+	var buf bytes.Buffer
+	templateData := any(nil)
+	if len(data) > 0 {
+		templateData = data[0]
+	}
+	if err := tqlQuery.template.Execute(&buf, templateData); err != nil {
+		log.Error("error executing template", "error", err)
+		return nil, errors.Join(ErrPreparingQuery, err)
+	}
+	newQuery := &query[T]{
+		template: tqlQuery.template,
+	}
+	parsedSQL, err := newQuery.Parse(buf.String())
+	if err != nil {
+		log.Error("Error parsing sql template", "error", err)
+		return tqlQuery, errors.Join(ErrPreparingQuery, err)
+	}
+	switch db := any(txOrDb).(type) {
+	case *sql.DB:
+		newQuery.stmt, err = db.PrepareContext(ctx, parsedSQL)
+	case *sql.Tx:
+		newQuery.stmt, err = db.PrepareContext(ctx, parsedSQL)
+	default:
+		log.Error("Prepare called with an invalid queryable", "error", ErrPreparingQuery)
+		return nil, errors.Join(ErrPreparingQuery, ErrInvalidQueryable)
+	}
+	if err != nil {
+		log.Error("failed to prepare query", "error", err)
+		return nil, errors.Join(ErrPreparingQuery, err)
+	}
+	// register a function to cleanup the query when the context is done
+	context.AfterFunc(ctx, func() {
+		newQuery.Close()
+	})
+	return newQuery, nil
+}
+
+func Prepare[T any, Q Queryable](tqlQuery *query[T], db Q, data ...any) (*query[T], error) {
+	return PrepareContext(tqlQuery, context.Background(), db, data...)
 }
 
 // Parse parses the SQL template and extracts field information for scanning
@@ -156,83 +278,16 @@ func (query *query[T]) Parse(sql string) (string, error) {
 	return sql, nil
 }
 
-// Execute runs the prepared query and scans results into the target type
-func (query *query[T]) Execute(db *sql.DB, data ...any) ([]T, error) {
-	results := []T{}
+func (query *query[T]) Close() error {
 	if query == nil {
-		log.Error("Execute called on a nil query", "error", ErrNilQuery)
-		return results, errors.Join(ErrExecutingQuery, ErrNilQuery)
+		log.Error("Close called on a nil query")
+		return ErrNilQuery
 	}
-	var err error
-	// this query hasn't been prepared yet
-	if query.stmt == nil {
-		// prepare the query
-		if query, err = query.Prepare(db); err != nil {
-			return results, errors.Join(ErrExecutingQuery, err)
-		}
+	if query.stmt != nil {
+		query.stmt.Close()
+		query.stmt = nil
 	}
-	var scanDest T
-	scanDestValue := reflect.ValueOf(&scanDest).Elem()
-	fields := []any{}
-	for _, fieldIndex := range query.indices {
-		field := scanDestValue.FieldByIndex(fieldIndex)
-		fields = append(fields, field.Addr().Interface())
-	}
-
-	rows, err := query.stmt.Query(data...)
-	if err != nil {
-		return results, errors.Join(ErrExecutingQuery, err)
-	}
-	for rows.Next() {
-		err := rows.Scan(fields...)
-		if err != nil {
-			return results, errors.Join(ErrExecutingQuery, err)
-		}
-		results = append(results, scanDest)
-	}
-	return results, nil
-}
-
-// Prepare creates a prepared statement from the query template
-func (tqlQuery *query[T]) Prepare(db *sql.DB, data ...any) (*query[T], error) {
-	// make sure the query is not nil
-	if tqlQuery == nil {
-		log.Error("Prepare called on a nil query")
-		return tqlQuery, errors.Join(ErrPreparingQuery, ErrNilQuery)
-	}
-	if tqlQuery.template == nil {
-		// this should never happen but just in case we will check it anyway
-		log.Error("Prepare called with a nil template")
-		return tqlQuery, errors.Join(ErrPreparingQuery, ErrNilTemplate)
-	}
-	if db == nil {
-		log.Error("Prepare called with a nil db")
-		return tqlQuery, errors.Join(ErrPreparingQuery, ErrPreparingQuery)
-	}
-	var buf bytes.Buffer
-	templateData := any(nil)
-	if len(data) > 0 {
-		templateData = data[0]
-	}
-	if err := tqlQuery.template.Execute(&buf, templateData); err != nil {
-		log.Error("error executing template", "error", err)
-		return tqlQuery, errors.Join(ErrPreparingQuery, err)
-	}
-	newQuery := &query[T]{
-		template: tqlQuery.template,
-	}
-	sql, err := newQuery.Parse(buf.String())
-	if err != nil {
-		log.Error("Error parsing sql template", "error", err)
-		return tqlQuery, errors.Join(ErrPreparingQuery, err)
-	}
-	newQuery.stmt, err = db.Prepare(sql)
-	if err != nil {
-		log.Error("failed to prepare query", "error", err)
-		return tqlQuery, errors.Join(ErrPreparingQuery, err)
-	}
-	return newQuery, nil
-
+	return nil
 }
 
 // parseFieldName extracts the field name from struct field tags
