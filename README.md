@@ -1,4 +1,4 @@
-# TQL - Type-safe zero dependency Query Language
+# TQL - Type-safe Zero Dependency Query Language
 
 TQL is an internal SQL templating engine designed to provide type safety when scanning database results while staying as close as possible to raw SQL syntax. It aims to eliminate runtime errors from mismatched types or missing columns while preserving the flexibility and power of raw SQL.
 
