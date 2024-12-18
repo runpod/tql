@@ -13,13 +13,14 @@ TQL is an internal SQL templating engine designed to provide type safety when sc
 - Compile-time validation of struct field tags and query parameters
 - Automatic handling of NULL values through pointer types
 - Support for both *sql.DB and *sql.Tx
+- Automatic cleanup of prepared statements via context cancellation
 
 ## Usage Example
 
 ```go
 // Define your result structure
 type User struct {
-    ID        int             `db:"id"`
+    Id        int             `db:"id"`
     Name      *sql.NullString `db:"name"`
     UUID      *sql.NullString `db:"uuid"`
     CreatedAt *time.Time      `db:"createdAt"`
@@ -53,19 +54,18 @@ results, err = tql.Query(prepared, db, 1)
 
 ## Context Support
 
-TQL provides context-aware variants of its core functions:
+TQL provides context-aware variants of its core functions with automatic cleanup:
 
 ```go
 ctx := context.Background()
 prepared, err := tql.PrepareContext(query, ctx, db)
+// The prepared statement will be automatically closed when ctx is cancelled
 results, err := tql.QueryContext(prepared, ctx, db, 1)
 ```
 
-The prepared statement will be automatically closed when the context is cancelled.
-
 ## Transaction Support
 
-TQL works seamlessly with both database connections and transactions:
+TQL works seamlessly with both database connections and transactions using a generic DbOrTx interface:
 
 ```go
 tx, err := db.Begin()
@@ -80,13 +80,13 @@ results, err := tql.Query(query, tx, 1)
 ## Advanced Features
 
 ### SELECT * Support
-TQL supports using `SELECT *` and will automatically map all columns from the specified table:
+TQL automatically maps all columns when using `SELECT *`:
 
 ```go
 query, err := tql.New[Results](`SELECT * FROM User`)
 ```
 
-It also supports selecting all columns from specific tables in JOINs:
+It also supports table-specific wildcards in JOINs:
 
 ```go
 type Results struct {
@@ -120,7 +120,7 @@ query, err := tql.New[Results](`
 
 ### Error Handling
 
-TQL provides detailed error types for common scenarios:
+TQL provides detailed error types that can be checked using `errors.Is()`:
 
 ```go
 var (
@@ -131,6 +131,7 @@ var (
     ErrParsingQuery    = errors.New("failed to parse sql template")
     ErrParsingTemplate = errors.New("failed to parse template")
     ErrInvalidType     = errors.New("failed to create query type parameter is invalid")
+    ErrInvalidQueryable = errors.New("invalid queryable")
 )
 ```
 
@@ -160,10 +161,12 @@ Key observations:
 For optimal performance:
 1. Use `Prepare()` for queries that will be executed multiple times
 2. Cache prepared statements when possible
-3. Profile your specific use case to make informed decisions
+3. Consider using context cancellation for automatic cleanup of prepared statements
+4. Profile your specific use case to make informed decisions
 
 The small overhead added by TQL is typically justified by the benefits of:
 - Compile-time type checking
 - Automatic field mapping
 - Reduced potential for runtime errors
 - Improved maintainability
+- Automatic resource cleanup

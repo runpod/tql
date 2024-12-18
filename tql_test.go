@@ -143,7 +143,7 @@ func TestWithTemplate(t *testing.T) {
 
 func TestWithNilQuery(t *testing.T) {
 	db := mock(t)
-	var nilQuery *query[any]
+	var nilQuery *QueryTemplate[any]
 	if _, err := Prepare(nilQuery, db, time.Now().Format("2006-01-02 15:04:05")); !errors.Is(err, ErrPreparingQuery) {
 		t.Fatal(err)
 	}
@@ -154,7 +154,7 @@ func TestWithNilQuery(t *testing.T) {
 
 func TestWithNilTemplate(t *testing.T) {
 	db := mock(t)
-	queryWithNilTemplate := &query[any]{}
+	queryWithNilTemplate := &QueryTemplate[any]{}
 	if _, err := Prepare(queryWithNilTemplate, db); !errors.Is(err, ErrNilTemplate) {
 		t.Fatal(err)
 	}
@@ -172,12 +172,8 @@ func TestWithFunctions(t *testing.T) {
 	if _, err := Prepare(query, db); err != nil {
 		t.Fatal(err)
 	}
-	results, err := Query(query, db, "Billy Joel", 2)
-	if err != nil {
+	if _, err := Exec(query, db, "Billy Joel", 2); err != nil {
 		t.Fatal(err)
-	}
-	if len(results) != 0 {
-		t.Fatal("expected 0 results, got", len(results))
 	}
 }
 

@@ -36,21 +36,23 @@ type TQ[T any] interface {
 	Prepare(db *sql.DB, data ...any) (*TQ[T], error)
 }
 
-type Queryable interface {
+type DbOrTx interface {
 	*sql.DB | *sql.Tx
 }
 
-// query implements the Query interface with template and statement preparation
-type query[T any] struct {
-	stmt     *sql.Stmt
+// QueryTemplate implements the Query interface with template and statement preparation
+type QueryTemplate[T any] struct {
 	template *template.Template
-	indices  [][]int
+	stmt     *sql.Stmt
+
+	indices [][]int
 }
 
 var (
 	// ErrNilQuery is returned when attempting to use a nil query
 	ErrNilQuery = errors.New("query is nil")
-
+	// ErrNilStmt is returned when attempting to use a nil statement
+	ErrNilStmt = errors.New("statement is nil")
 	// ErrNilTemplate is returned when attempting to use a nil template
 	ErrNilTemplate = errors.New("template is nil")
 
@@ -80,7 +82,7 @@ var (
 var defaultFuncs = FuncMap{}
 
 // New creates a new query with default template functions
-func New[S any](sqlTemplate string, maybeFuncs ...FuncMap) (*query[S], error) {
+func New[S any](sqlTemplate string, maybeFuncs ...FuncMap) (*QueryTemplate[S], error) {
 	funcs := defaultFuncs
 	if len(maybeFuncs) > 0 {
 		funcs = maybeFuncs[0]
@@ -95,11 +97,11 @@ func New[S any](sqlTemplate string, maybeFuncs ...FuncMap) (*query[S], error) {
 		log.Error("failed to create query with functions", "error", err)
 		return nil, errors.Join(ErrParsingTemplate, err)
 	}
-	return &query[S]{template: tmpl}, nil
+	return &QueryTemplate[S]{template: tmpl}, nil
 }
 
 // Must creates a new query and panics if an error occurs
-func Must[S any](sqlTemplate string) *query[S] {
+func Must[S any](sqlTemplate string) *QueryTemplate[S] {
 	q, err := New[S](sqlTemplate)
 	if err != nil {
 		panic(err)
@@ -107,11 +109,11 @@ func Must[S any](sqlTemplate string) *query[S] {
 	return q
 }
 
-func Query[T any, Q Queryable](query *query[T], db Q, data ...any) ([]T, error) {
+func Query[T any, Q DbOrTx](query *QueryTemplate[T], db Q, data ...any) ([]T, error) {
 	return QueryContext(query, context.Background(), db, data...)
 }
 
-func QueryContext[T any, Q Queryable](query *query[T], ctx context.Context, txOrDb Q, data ...any) ([]T, error) {
+func QueryContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, txOrDb Q, data ...any) ([]T, error) {
 	results := []T{}
 	if query == nil {
 		log.Error("Execute called on a nil query", "error", ErrNilQuery)
@@ -148,7 +150,7 @@ func QueryContext[T any, Q Queryable](query *query[T], ctx context.Context, txOr
 	return results, nil
 }
 
-func ExecContext[T any, Q Queryable](query *query[T], ctx context.Context, db Q, data ...any) (sql.Result, error) {
+func ExecContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, db Q, data ...any) (sql.Result, error) {
 	if query == nil {
 		log.Error("Execute called on a nil query", "error", ErrNilQuery)
 		return nil, errors.Join(ErrExecutingQuery, ErrNilQuery)
@@ -162,20 +164,20 @@ func ExecContext[T any, Q Queryable](query *query[T], ctx context.Context, db Q,
 	return query.stmt.ExecContext(ctx, data...)
 }
 
-func Exec[T any, Q Queryable](query *query[T], db Q, data ...any) (sql.Result, error) {
+func Exec[T any, Q DbOrTx](query *QueryTemplate[T], db Q, data ...any) (sql.Result, error) {
 	return ExecContext(query, context.Background(), db, data...)
 }
 
-func PrepareContext[T any, Q Queryable](tqlQuery *query[T], ctx context.Context, txOrDb Q, data ...any) (*query[T], error) {
+func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, txOrDb Q, data ...any) (*QueryTemplate[T], error) {
 	// make sure the query is not nil
-	if tqlQuery == nil {
+	if query == nil {
 		log.Error("Prepare called on a nil query")
 		return nil, errors.Join(ErrPreparingQuery, ErrNilQuery)
 	}
-	if tqlQuery.template == nil {
+	if query.template == nil {
 		// this should never happen but just in case we will check it anyway
 		log.Error("Prepare called with a nil template")
-		return tqlQuery, errors.Join(ErrPreparingQuery, ErrNilTemplate)
+		return query, errors.Join(ErrPreparingQuery, ErrNilTemplate)
 	}
 	if txOrDb == nil {
 		log.Error("Prepare called with a nil tx or db")
@@ -186,23 +188,20 @@ func PrepareContext[T any, Q Queryable](tqlQuery *query[T], ctx context.Context,
 	if len(data) > 0 {
 		templateData = data[0]
 	}
-	if err := tqlQuery.template.Execute(&buf, templateData); err != nil {
+	if err := query.template.Execute(&buf, templateData); err != nil {
 		log.Error("error executing template", "error", err)
 		return nil, errors.Join(ErrPreparingQuery, err)
 	}
-	newQuery := &query[T]{
-		template: tqlQuery.template,
-	}
-	parsedSQL, err := newQuery.Parse(buf.String())
+	parsedSQL, err := query.Parse(buf.String())
 	if err != nil {
 		log.Error("Error parsing sql template", "error", err)
-		return tqlQuery, errors.Join(ErrPreparingQuery, err)
+		return query, errors.Join(ErrPreparingQuery, err)
 	}
 	switch db := any(txOrDb).(type) {
 	case *sql.DB:
-		newQuery.stmt, err = db.PrepareContext(ctx, parsedSQL)
+		query.stmt, err = db.PrepareContext(ctx, parsedSQL)
 	case *sql.Tx:
-		newQuery.stmt, err = db.PrepareContext(ctx, parsedSQL)
+		query.stmt, err = db.PrepareContext(ctx, parsedSQL)
 	default:
 		log.Error("Prepare called with an invalid queryable", "error", ErrPreparingQuery)
 		return nil, errors.Join(ErrPreparingQuery, ErrInvalidQueryable)
@@ -213,17 +212,17 @@ func PrepareContext[T any, Q Queryable](tqlQuery *query[T], ctx context.Context,
 	}
 	// register a function to cleanup the query when the context is done
 	context.AfterFunc(ctx, func() {
-		newQuery.Close()
+		query.Close()
 	})
-	return newQuery, nil
+	return query, nil
 }
 
-func Prepare[T any, Q Queryable](tqlQuery *query[T], db Q, data ...any) (*query[T], error) {
+func Prepare[T any, Q DbOrTx](tqlQuery *QueryTemplate[T], db Q, data ...any) (*QueryTemplate[T], error) {
 	return PrepareContext(tqlQuery, context.Background(), db, data...)
 }
 
 // Parse parses the SQL template and extracts field information for scanning
-func (query *query[T]) Parse(sql string) (string, error) {
+func (query *QueryTemplate[T]) Parse(sql string) (string, error) {
 	var tmp T
 	tableOrTables := reflect.ValueOf(tmp).Type()
 	selectedFields := []string{}
@@ -278,7 +277,7 @@ func (query *query[T]) Parse(sql string) (string, error) {
 	return sql, nil
 }
 
-func (query *query[T]) Close() error {
+func (query *QueryTemplate[T]) Close() error {
 	if query == nil {
 		log.Error("Close called on a nil query")
 		return ErrNilQuery
