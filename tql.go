@@ -30,12 +30,6 @@ var (
 // FuncMap is an alias for template.FuncMap to provide custom template functions
 type FuncMap template.FuncMap
 
-// Query is the interface for executing SQL queries with type safety
-type TQ[T any] interface {
-	Execute(db *sql.DB, data ...any) ([]T, error)
-	Prepare(db *sql.DB, data ...any) (*TQ[T], error)
-}
-
 type DbOrTx interface {
 	*sql.DB | *sql.Tx
 }
