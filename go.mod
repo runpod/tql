@@ -1,4 +1,4 @@
-module runpod.com/go-tql
+module github.com/runpod/go-tql
 
 go 1.23.4
 
