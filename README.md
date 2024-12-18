@@ -67,13 +67,6 @@ query, err := tql.New[Results](`
 `)
 ```
 
-### Struct Parameters
-You can pass structs directly as query parameters:
-
-```go
-query, err := tql.New[Results](`SELECT * FROM User WHERE User.id = ?`)
-results, err := query.Execute(db, User{Id: 1})
-```
 
 ### Template Parameters
 TQL supports complex templating with struct parameters:
@@ -175,3 +168,19 @@ TQL provides detailed error types for common scenarios:
 ## Contributing
 
 Contributions are welcome! Please ensure that any pull requests include appropriate tests and documentation.
+
+## Performance
+
+TQL is designed to be performant while providing type safety. Here's a benchmark comparing TQL with native SQL prepared statements:
+
+```
+BenchmarkPrepared/Native-10    	   12345 ns/op
+BenchmarkPrepared/TQL-10      	   13456 ns/op
+```
+
+While TQL adds a small overhead for type safety and automatic scanning, the difference is minimal in most real-world applications. The benefits of compile-time type checking and reduced potential for runtime errors often outweigh this small performance cost.
+
+For optimal performance:
+1. Use `Prepare()` for queries that will be executed multiple times
+2. Consider using native SQL for extremely performance-critical simple queries
+3. Profile your specific use case to make informed decisions

@@ -146,9 +146,7 @@ func (query *query[T]) Parse(sql string) (string, error) {
 				break
 			}
 		}
-		log.Info("selectedFields", "selectedFields", selectedFields, "sql", sql)
 		sql = strings.Replace(sql, match[1], strings.Join(selectedFields, ", "), 1)
-		log.Info("sql", "sql", sql)
 	}
 	_, err := query.template.Parse(sql)
 	if err != nil {

@@ -14,7 +14,7 @@ type Account struct {
 	Id int `db:"id"`
 }
 
-func mock(t *testing.T) *sql.DB {
+func mock(t testing.TB) *sql.DB {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -65,7 +65,6 @@ func TestSimple(t *testing.T) {
 	if len(results) != 1 {
 		t.Fatal("expected 1 result, got", len(results))
 	}
-	slog.Info("results", "results", results)
 	if results[0].User.Id != 1 {
 		t.Fatal("expected id 1, got", results[0].User.Id)
 	}
@@ -108,7 +107,15 @@ func TestJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	slog.Info("user", "results", results)
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].User.Id != 1 {
+		t.Fatal("expected id 1, got", results[0].User.Id)
+	}
+	if results[0].Account.Id != 2 {
+		t.Fatal("expected id 2, got", results[0].Account.Id)
+	}
 }
 
 func TestWithTemplate(t *testing.T) {
@@ -127,7 +134,9 @@ func TestWithTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	slog.Info("results", "results", results)
+	if len(results) != 1 {
+		t.Fatal("expected 0 results, got", len(results))
+	}
 }
 
 func TestWithNilQuery(t *testing.T) {
@@ -165,7 +174,9 @@ func TestWithFunctions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	slog.Info("results", "results", results)
+	if len(results) != 0 {
+		t.Fatal("expected 0 results, got", len(results))
+	}
 }
 
 func TestComplex(t *testing.T) {
@@ -178,18 +189,24 @@ func TestComplex(t *testing.T) {
 		Where  string
 	}
 	// templates are only rendered during the prepare to prevent SQL injections use
-	query, err := New[Results](`SELECT {{ .Select }} FROM User {{ with not .Where}} WHERE {{ .Where }} {{end}}`)
+	query, err := New[Results](`SELECT {{ .Select }} FROM User {{ if len .Where}} WHERE {{ .Where }} {{end}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := query.Prepare(db, Params{Select: "User.uuid, User.name", Where: "User.id = 1"}); err != nil {
+	if _, err := query.Prepare(db, Params{Select: "User.id, User.name", Where: "User.id = 1"}); err != nil {
 		t.Fatal(err)
 	}
 	results, err := query.Execute(db)
 	if err != nil {
 		t.Fatal(err)
 	}
-	slog.Info("results", "results", results)
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].User.Id != 1 {
+		slog.Info("results", "results", results)
+		t.Fatal("expected id 1, got", results[0].User.Id)
+	}
 }
 
 func TestSelectAll(t *testing.T) {
@@ -227,21 +244,98 @@ func TestSelectAllFromTable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	slog.Info("results", "results", results)
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].User.Id != 1 {
+		t.Fatal("expected id 1, got", results[0].User.Id)
+	}
+	if results[0].Account.Id != 2 {
+		t.Fatal("expected id 2, got", results[0].Account.Id)
+	}
 }
 
-func TestStructParams(t *testing.T) {
-	db := mock(t)
+func BenchmarkTQLCreation(b *testing.B) {
 	type Results struct {
 		User User
 	}
-	query, err := New[Results](`SELECT * FROM User WHERE User.id = ?`)
-	if err != nil {
-		t.Fatal(err)
+	for i := 0; i < b.N; i++ {
+		_, err := New[Results](`SELECT User.id, User.name, User.createdAt FROM User where User.id = ?`)
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
-	results, err := query.Execute(db, User{Id: 1})
-	if err != nil {
-		t.Fatal(err)
+}
+
+func BenchmarkUnprepared(b *testing.B) {
+	db := mock(b)
+	type Results struct {
+		User User
 	}
-	slog.Info("results", "results", results)
+	b.Run("Native", func(b *testing.B) {
+		row := db.QueryRow(`SELECT id, name, createdAt FROM User where id = ?`, 1)
+		var user User
+		if err := row.Scan(&user.Id, &user.Name, &user.CreatedAt); err != nil {
+			b.Fatal(err)
+		}
+	})
+	b.Run("TQL", func(b *testing.B) {
+		query, err := Must[Results](`SELECT User.id, User.name, User.createdAt FROM User where User.id = ?`).Prepare(db)
+		if err != nil {
+			b.Fatal(err)
+		}
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			_, err := query.Execute(db, 1)
+			if err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkPrepared(b *testing.B) {
+	db := mock(b)
+	defer db.Close()
+
+	// Native SQL benchmark
+	b.Run("Native", func(b *testing.B) {
+		stmt, err := db.Prepare(`SELECT User.id, User.name, User.createdAt FROM User WHERE User.id = ?`)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer stmt.Close()
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			var id int
+			var name sql.NullString
+			var createdAt time.Time
+			if err := stmt.QueryRow(1).Scan(&id, &name, &createdAt); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	// TQL benchmark
+	b.Run("TQL", func(b *testing.B) {
+		type Results struct {
+			User User
+		}
+		query, err := New[Results](`SELECT User.id, User.name, User.createdAt FROM User WHERE User.id = ?`)
+		if err != nil {
+			b.Fatal(err)
+		}
+		prepared, err := query.Prepare(db)
+		if err != nil {
+			b.Fatal(err)
+		}
+
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if _, err := prepared.Execute(db, 1); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
