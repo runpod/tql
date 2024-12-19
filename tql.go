@@ -9,7 +9,6 @@ import (
 	"errors"
 	"iter"
 	"log/slog"
-	"os"
 	"reflect"
 	"regexp"
 	"strings"
@@ -18,7 +17,7 @@ import (
 
 var (
 	// log is the package logger
-	log = slog.New(slog.NewJSONHandler(os.Stdout, nil)).WithGroup("tql")
+	log = slog.Default().WithGroup("tql")
 
 	// tagRegex matches key=value pairs in struct tags
 	tagRegex = regexp.MustCompile(`(\w+)=([^;]+)`)
@@ -38,8 +37,7 @@ type DbOrTx interface {
 type QueryTemplate[T any] struct {
 	template *template.Template
 	stmt     *sql.Stmt
-
-	indices [][]int
+	indices  [][]int
 }
 
 var (
@@ -162,6 +160,19 @@ func Exec[T any, Q DbOrTx](query *QueryTemplate[T], db Q, data ...any) (sql.Resu
 	return ExecContext(query, context.Background(), db, data...)
 }
 
+func Generate[T any](query *QueryTemplate[T], data ...any) (string, error) {
+	var buf bytes.Buffer
+	templateData := any(nil)
+	if len(data) > 0 {
+		templateData = data[0]
+	}
+	if err := query.template.Execute(&buf, templateData); err != nil {
+		log.Error("error executing template", "error", err)
+		return "", errors.Join(ErrPreparingQuery, err)
+	}
+	return query.Parse(buf.String())
+}
+
 func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, txOrDb Q, data ...any) (*QueryTemplate[T], error) {
 	// make sure the query is not nil
 	if query == nil {
@@ -177,16 +188,7 @@ func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Contex
 		log.Error("Prepare called with a nil tx or db")
 		return nil, errors.Join(ErrPreparingQuery, ErrPreparingQuery)
 	}
-	var buf bytes.Buffer
-	templateData := any(nil)
-	if len(data) > 0 {
-		templateData = data[0]
-	}
-	if err := query.template.Execute(&buf, templateData); err != nil {
-		log.Error("error executing template", "error", err)
-		return nil, errors.Join(ErrPreparingQuery, err)
-	}
-	parsedSQL, err := query.Parse(buf.String())
+	parsedSQL, err := Generate(query, data...)
 	if err != nil {
 		log.Error("Error parsing sql template", "error", err)
 		return query, errors.Join(ErrPreparingQuery, err)
