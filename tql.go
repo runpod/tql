@@ -24,6 +24,9 @@ var (
 
 	// selectAllRegex matches SELECT statements to parse column selection
 	selectAllRegex = regexp.MustCompile(`(?is)^\s*SELECT\s+(.*?)\s+FROM\b`)
+
+	// defaultFuncs contains the default template functions
+	defaultFuncs = FuncMap{}
 )
 
 // FuncMap is an alias for template.FuncMap to provide custom template functions
@@ -69,9 +72,6 @@ var (
 	// ErrInvalidType is returned when the type parameter is not a struct
 	ErrInvalidType = errors.New("failed to create query type parameter is invalid")
 )
-
-// defaultFuncs contains the default template functions
-var defaultFuncs = FuncMap{}
 
 // New creates a new query with default template functions
 func New[S any](sqlTemplate string, maybeFuncs ...FuncMap) (*QueryTemplate[S], error) {
@@ -173,6 +173,14 @@ func Generate[T any](query *QueryTemplate[T], data ...any) (string, error) {
 	return query.Parse(buf.String())
 }
 
+func MustGenerate[T any](query *QueryTemplate[T], data ...any) string {
+	sql, err := Generate(query, data...)
+	if err != nil {
+		panic(err)
+	}
+	return sql
+}
+
 func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, txOrDb Q, data ...any) (*QueryTemplate[T], error) {
 	// make sure the query is not nil
 	if query == nil {
@@ -264,11 +272,6 @@ func (query *QueryTemplate[T]) Parse(sql string) (string, error) {
 			}
 		}
 		sql = strings.Replace(sql, match[1], strings.Join(selectedFields, ", "), 1)
-	}
-	_, err := query.template.Parse(sql)
-	if err != nil {
-		log.Error("failed to create query with functions", "error", err)
-		return "", errors.Join(ErrParsingQuery, err)
 	}
 	return sql, nil
 }
