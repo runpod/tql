@@ -39,8 +39,13 @@ type DbOrTx interface {
 // QueryTemplate implements the Query interface with template and statement preparation
 type QueryTemplate[T any] struct {
 	template *template.Template
-	stmt     *sql.Stmt
+}
+
+type QueryStmt[T any] struct {
+	template *QueryTemplate[T]
+	prepared *sql.Stmt
 	indices  [][]int
+	sql      string
 }
 
 var (
@@ -112,34 +117,11 @@ func QueryContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context,
 		return results, errors.Join(ErrExecutingQuery, ErrNilQuery)
 	}
 	var err error
-	// this query hasn't been prepared yet
-	if query.stmt == nil {
-		// prepare the query
-		if query, err = PrepareContext(query, ctx, txOrDb); err != nil {
-			return results, errors.Join(ErrExecutingQuery, err)
-		}
-
-	}
-	var scanDest T
-	scanDestValue := reflect.ValueOf(&scanDest).Elem()
-	fields := []any{}
-	for _, fieldIndex := range query.indices {
-		field := scanDestValue.FieldByIndex(fieldIndex)
-		fields = append(fields, field.Addr().Interface())
-	}
-
-	rows, err := query.stmt.QueryContext(ctx, data...)
+	stmt, err := PrepareContext(query, ctx, txOrDb)
 	if err != nil {
 		return results, errors.Join(ErrExecutingQuery, err)
 	}
-	for rows.Next() {
-		err := rows.Scan(fields...)
-		if err != nil {
-			return results, errors.Join(ErrExecutingQuery, err)
-		}
-		results = append(results, scanDest)
-	}
-	return results, nil
+	return stmt.QueryContext(ctx, data...)
 }
 
 func ExecContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, db Q, data ...any) (sql.Result, error) {
@@ -147,20 +129,19 @@ func ExecContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, 
 		log.Error("Execute called on a nil query", "error", ErrNilQuery)
 		return nil, errors.Join(ErrExecutingQuery, ErrNilQuery)
 	}
-	if query.stmt == nil {
-		var err error
-		if query, err = PrepareContext(query, ctx, db); err != nil {
-			return nil, errors.Join(ErrExecutingQuery, err)
-		}
+	stmt, err := PrepareContext(query, ctx, db)
+	if err != nil {
+		log.Error("failed to prepare query", "error", err)
+		return nil, errors.Join(ErrExecutingQuery, err)
 	}
-	return query.stmt.ExecContext(ctx, data...)
+	return stmt.ExecContext(ctx, data...)
 }
 
 func Exec[T any, Q DbOrTx](query *QueryTemplate[T], db Q, data ...any) (sql.Result, error) {
 	return ExecContext(query, context.Background(), db, data...)
 }
 
-func Generate[T any](query *QueryTemplate[T], data ...any) (string, error) {
+func Generate[T any](query *QueryTemplate[T], data ...any) (*QueryStmt[T], error) {
 	var buf bytes.Buffer
 	templateData := any(nil)
 	if len(data) > 0 {
@@ -168,20 +149,21 @@ func Generate[T any](query *QueryTemplate[T], data ...any) (string, error) {
 	}
 	if err := query.template.Execute(&buf, templateData); err != nil {
 		log.Error("error executing template", "error", err)
-		return "", errors.Join(ErrPreparingQuery, err)
+		return nil, errors.Join(ErrPreparingQuery, err)
 	}
-	return query.Parse(buf.String())
+	results := Parse[T](buf.String())
+	return &QueryStmt[T]{template: query, indices: results.indices, sql: results.sql}, nil
 }
 
-func MustGenerate[T any](query *QueryTemplate[T], data ...any) string {
-	sql, err := Generate(query, data...)
+func MustGenerate[T any](query *QueryTemplate[T], data ...any) *QueryStmt[T] {
+	stmt, err := Generate(query, data...)
 	if err != nil {
 		panic(err)
 	}
-	return sql
+	return stmt
 }
 
-func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, txOrDb Q, data ...any) (*QueryTemplate[T], error) {
+func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, txOrDb Q, data ...any) (*QueryStmt[T], error) {
 	// make sure the query is not nil
 	if query == nil {
 		log.Error("Prepare called on a nil query")
@@ -190,22 +172,22 @@ func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Contex
 	if query.template == nil {
 		// this should never happen but just in case we will check it anyway
 		log.Error("Prepare called with a nil template")
-		return query, errors.Join(ErrPreparingQuery, ErrNilTemplate)
+		return nil, errors.Join(ErrPreparingQuery, ErrNilTemplate)
 	}
 	if txOrDb == nil {
 		log.Error("Prepare called with a nil tx or db")
 		return nil, errors.Join(ErrPreparingQuery, ErrPreparingQuery)
 	}
-	parsedSQL, err := Generate(query, data...)
+	queryStmt, err := Generate(query, data...)
 	if err != nil {
 		log.Error("Error parsing sql template", "error", err)
-		return query, errors.Join(ErrPreparingQuery, err)
+		return nil, errors.Join(ErrPreparingQuery, err)
 	}
 	switch db := any(txOrDb).(type) {
 	case *sql.DB:
-		query.stmt, err = db.PrepareContext(ctx, parsedSQL)
+		queryStmt.prepared, err = db.PrepareContext(ctx, queryStmt.sql)
 	case *sql.Tx:
-		query.stmt, err = db.PrepareContext(ctx, parsedSQL)
+		queryStmt.prepared, err = db.PrepareContext(ctx, queryStmt.sql)
 	default:
 		log.Error("Prepare called with an invalid queryable", "error", ErrPreparingQuery)
 		return nil, errors.Join(ErrPreparingQuery, ErrInvalidQueryable)
@@ -216,17 +198,20 @@ func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Contex
 	}
 	// register a function to cleanup the query when the context is done
 	context.AfterFunc(ctx, func() {
-		query.Close()
+		queryStmt.Close()
 	})
-	return query, nil
+	return queryStmt, nil
 }
 
-func Prepare[T any, Q DbOrTx](tqlQuery *QueryTemplate[T], db Q, data ...any) (*QueryTemplate[T], error) {
+func Prepare[T any, Q DbOrTx](tqlQuery *QueryTemplate[T], db Q, data ...any) (*QueryStmt[T], error) {
 	return PrepareContext(tqlQuery, context.Background(), db, data...)
 }
 
 // Parse parses the SQL template and extracts field information for scanning
-func (query *QueryTemplate[T]) Parse(sql string) (string, error) {
+func Parse[T any](sql string) (results struct {
+	sql     string
+	indices [][]int
+}) {
 	var tmp T
 	tableOrTables := reflect.ValueOf(tmp).Type()
 	selectedFields := []string{}
@@ -234,9 +219,6 @@ func (query *QueryTemplate[T]) Parse(sql string) (string, error) {
 	// parse the sql template to see if we are selecting all fields
 	if match != nil {
 		selectAll := strings.TrimSpace(match[1]) == "*"
-		// if !selectAll {
-		// 	selectedFields = strings.Split(match[1], ",")
-		// }
 		// iterate over the fields of the struct to get the indices of the fields that we are selecting
 		for tableOrField := range iterStructFields(tableOrTables) {
 			tableName := ""
@@ -264,7 +246,7 @@ func (query *QueryTemplate[T]) Parse(sql string) (string, error) {
 				}
 				selectedFields = append(selectedFields, qualifiedName)
 
-				query.indices = append(query.indices, append(indices[:], field.Index...))
+				results.indices = append(results.indices, append(indices[:], field.Index...))
 			}
 
 			if tableOrFieldType == tableOrTables {
@@ -272,21 +254,67 @@ func (query *QueryTemplate[T]) Parse(sql string) (string, error) {
 				break
 			}
 		}
-		sql = strings.Replace(sql, match[1], strings.Join(selectedFields, ", "), 1)
+		results.sql = strings.Replace(sql, match[1], strings.Join(selectedFields, ", "), 1)
 	}
-	return sql, nil
+	return results
 }
 
-func (query *QueryTemplate[T]) Close() error {
+func (query *QueryStmt[T]) Close() error {
 	if query == nil {
 		log.Error("Close called on a nil query")
 		return ErrNilQuery
 	}
-	if query.stmt != nil {
-		query.stmt.Close()
-		query.stmt = nil
+	if query.prepared != nil {
+		query.prepared.Close()
+		query.prepared = nil
 	}
 	return nil
+}
+
+func (query *QueryStmt[T]) ExecContext(ctx context.Context, data ...any) (sql.Result, error) {
+	if query.prepared == nil {
+		log.Error("ExecContext called on a nil prepared query")
+		return nil, ErrNilStmt
+	}
+	return query.prepared.ExecContext(ctx, data...)
+}
+
+func (query *QueryStmt[T]) Exec(data ...any) (sql.Result, error) {
+	return query.ExecContext(context.Background(), data...)
+}
+
+func (query *QueryStmt[T]) QueryContext(ctx context.Context, data ...any) (results []T, err error) {
+	var scanDest T
+	scanDestValue := reflect.ValueOf(&scanDest).Elem()
+	fields := []any{}
+	for _, fieldIndex := range query.indices {
+		field := scanDestValue.FieldByIndex(fieldIndex)
+		fields = append(fields, field.Addr().Interface())
+	}
+	rows, err := query.prepared.QueryContext(ctx, data...)
+	if err != nil {
+		return results, errors.Join(ErrExecutingQuery, err)
+	}
+	for rows.Next() {
+		err := rows.Scan(fields...)
+		if err != nil {
+			return results, errors.Join(ErrExecutingQuery, err)
+		}
+		results = append(results, scanDest)
+	}
+	return results, nil
+}
+
+func (query *QueryStmt[T]) Query(data ...any) (results []T, err error) {
+	return query.QueryContext(context.Background(), data...)
+}
+
+func (query *QueryStmt[T]) SQL() string {
+	if query == nil {
+		log.Error("SQL called on a nil query")
+		return ""
+	}
+	return query.sql
 }
 
 // parseFieldName extracts the field name from struct field tags

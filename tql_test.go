@@ -59,7 +59,11 @@ func TestSimple(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := Query(query, db, 1)
+	queryStmt, err := Prepare(query, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query(1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,10 +133,11 @@ func TestWithTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Prepare(query, db, time.Now().Format("2006-01-02 15:04:05")); err != nil {
+	queryStmt, err := Prepare(query, db, time.Now().Format("2006-01-02 15:04:05"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := Query(query, db)
+	results, err := queryStmt.Query()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,10 +196,11 @@ func TestComplex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Prepare(query, db, Params{Select: "User.id, User.name", Where: "User.id = 1"}); err != nil {
+	queryStmt, err := Prepare(query, db, Params{Select: "User.id, User.name", Where: "User.id = 1"})
+	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := Query(query, db)
+	results, err := queryStmt.Query()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -315,14 +321,14 @@ func TestCleanupWithContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prepared, err := PrepareContext(query, ctx, db)
+	queryStmt, err := PrepareContext(query, ctx, db)
 	if err != nil {
 		t.Fatal(err)
 	}
 	cancel()
 	time.Sleep(1 * time.Millisecond)
-	if prepared.stmt != nil {
-		t.Fatal("expected stmt to be nil, got", prepared.stmt, query.stmt)
+	if queryStmt.prepared != nil {
+		t.Fatal("expected stmt to be nil, got", queryStmt.prepared, queryStmt.prepared)
 	}
 }
 
@@ -351,13 +357,14 @@ func BenchmarkUnprepared(b *testing.B) {
 		}
 	})
 	b.Run("TQL", func(b *testing.B) {
-		query, err := Prepare(Must[Results](`SELECT User.id, User.name, User.createdAt FROM User where User.id = ?`), db)
-		if err != nil {
-			b.Fatal(err)
-		}
+		query := Must[Results](`SELECT User.id, User.name, User.createdAt FROM User where User.id = ?`)
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			_, err := Query(query, db, 1)
+			stmt, err := Prepare(query, db)
+			if err != nil {
+				b.Fatal(err)
+			}
+			_, err = stmt.Query(1)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -404,7 +411,7 @@ func BenchmarkPrepared(b *testing.B) {
 
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			if _, err := Query(prepared, db, 1); err != nil {
+			if _, err := prepared.Query(1); err != nil {
 				b.Fatal(err)
 			}
 		}
