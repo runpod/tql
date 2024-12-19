@@ -253,6 +253,31 @@ func TestSelectAllFromTable(t *testing.T) {
 	}
 }
 
+func TestSelectAllFromTablWithOmit(t *testing.T) {
+	db := mock(t)
+	type Results struct {
+		User    User `tql:"omit=createdAt"`
+		Account Account
+	}
+	query, err := New[Results](`SELECT User.*, Account.id FROM User LEFT JOIN Account ON User.id = Account.userId`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := Query(query, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].User.Id != 1 {
+		t.Fatal("expected id 1, got", results[0].User.Id)
+	}
+	if results[0].Account.Id != 2 {
+		t.Fatal("expected id 2, got", results[0].Account.Id)
+	}
+}
+
 func TestWithTransaction(t *testing.T) {
 	db := mock(t)
 	tx, err := db.Begin()

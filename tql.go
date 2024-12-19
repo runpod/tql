@@ -234,9 +234,9 @@ func (query *QueryTemplate[T]) Parse(sql string) (string, error) {
 	// parse the sql template to see if we are selecting all fields
 	if match != nil {
 		selectAll := strings.TrimSpace(match[1]) == "*"
-		if !selectAll {
-			selectedFields = strings.Split(match[1], ",")
-		}
+		// if !selectAll {
+		// 	selectedFields = strings.Split(match[1], ",")
+		// }
 		// iterate over the fields of the struct to get the indices of the fields that we are selecting
 		for tableOrField := range iterStructFields(tableOrTables) {
 			tableName := ""
@@ -251,21 +251,22 @@ func (query *QueryTemplate[T]) Parse(sql string) (string, error) {
 			}
 			// check if we are selecting all fields from the table with X.*
 			selectAllFromTable := selectAll || containsWords(match[1], tableName+`\.\*`)
-			tags := parseTQLTag(tableOrField)
+			tag := parseTQLTag(tableOrField)
 			for field := range iterStructFields(tableOrFieldType) {
 				fieldName := parseFieldName(field)
 				qualifiedName := tableName + "." + fieldName
-				if strings.Contains(tags.omit, fieldName) || strings.Contains(tags.omit, qualifiedName) {
+				if containsWords(tag.omit, fieldName, qualifiedName) {
 					continue
 				}
-				if selectAll {
-					selectedFields = append(selectedFields, qualifiedName)
-				} else if !selectAllFromTable && !containsWords(match[1], tableName+`\.`+fieldName, fieldName) {
+				if !selectAllFromTable && !containsWords(match[1], tableName+`\.`+fieldName, fieldName) {
 					log.Debug("column not found in the sql statement", "column", qualifiedName, "sql", sql)
 					continue
 				}
+				selectedFields = append(selectedFields, qualifiedName)
+
 				query.indices = append(query.indices, append(indices[:], field.Index...))
 			}
+
 			if tableOrFieldType == tableOrTables {
 				// make sure we break out of this loop if this is a single table query
 				break
