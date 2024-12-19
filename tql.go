@@ -12,7 +12,9 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"text/template"
+	"unique"
 )
 
 var (
@@ -24,6 +26,10 @@ var (
 
 	// selectAllRegex matches SELECT statements to parse column selection
 	selectAllRegex = regexp.MustCompile(`(?is)^\s*SELECT\s+(.*?)\s+FROM\b`)
+
+	contextCacheKey = unique.Make("cache")
+
+	cache = sync.Map{}
 )
 
 // FuncMap is an alias for template.FuncMap to provide custom template functions
@@ -93,8 +99,8 @@ func New[S any](sqlTemplate string, maybeFuncs ...FuncMap) (*QueryTemplate[S], e
 }
 
 // Must creates a new query and panics if an error occurs
-func Must[S any](sqlTemplate string) *QueryTemplate[S] {
-	q, err := New[S](sqlTemplate)
+func Must[S any](sqlTemplate string, maybeFuncs ...FuncMap) *QueryTemplate[S] {
+	q, err := New[S](sqlTemplate, maybeFuncs...)
 	if err != nil {
 		panic(err)
 	}
