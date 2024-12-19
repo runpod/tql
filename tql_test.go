@@ -222,7 +222,11 @@ func TestSelectAll(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := Query(query, db)
+	queryStmt, err := Prepare(query, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,6 +235,28 @@ func TestSelectAll(t *testing.T) {
 	}
 	if results[0].User.Id != 1 {
 		t.Fatal("expected id 1, got", results[0].User.Id)
+	}
+}
+
+func TestTopLevelSelectAll(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT * FROM User`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
 	}
 }
 

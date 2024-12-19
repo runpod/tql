@@ -227,6 +227,7 @@ func Parse[T any](sql string) (results struct {
 			if tableOrFieldType.Kind() != reflect.Struct {
 				// this means that this is a single table query
 				tableOrFieldType = tableOrTables
+				tableName = tableOrTables.Name()
 			} else {
 				tableName = parseFieldName(tableOrField)
 				indices = append(indices, tableOrField.Index[0])
