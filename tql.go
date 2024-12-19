@@ -12,9 +12,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
-	"sync"
 	"text/template"
-	"unique"
 )
 
 var (
@@ -26,10 +24,6 @@ var (
 
 	// selectAllRegex matches SELECT statements to parse column selection
 	selectAllRegex = regexp.MustCompile(`(?is)^\s*SELECT\s+(.*?)\s+FROM\b`)
-
-	contextCacheKey = unique.Make("cache")
-
-	cache = sync.Map{}
 )
 
 // FuncMap is an alias for template.FuncMap to provide custom template functions
