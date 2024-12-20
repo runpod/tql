@@ -113,7 +113,7 @@ func Query[T any, Q DbOrTx](query *QueryTemplate[T], db Q, data ...any) ([]T, er
 func QueryContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, txOrDb Q, data ...any) ([]T, error) {
 	results := []T{}
 	if query == nil {
-		log.Error("Execute called on a nil query", "error", ErrNilQuery)
+		log.ErrorContext(ctx, "Execute called on a nil query", "error", ErrNilQuery)
 		return results, errors.Join(ErrExecutingQuery, ErrNilQuery)
 	}
 	var err error
@@ -126,12 +126,12 @@ func QueryContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context,
 
 func ExecContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, db Q, data ...any) (sql.Result, error) {
 	if query == nil {
-		log.Error("Execute called on a nil query", "error", ErrNilQuery)
+		log.ErrorContext(ctx, "Execute called on a nil query", "error", ErrNilQuery)
 		return nil, errors.Join(ErrExecutingQuery, ErrNilQuery)
 	}
 	stmt, err := PrepareContext(query, ctx, db)
 	if err != nil {
-		log.Error("failed to prepare query", "error", err)
+		log.ErrorContext(ctx, "failed to prepare query", "error", err)
 		return nil, errors.Join(ErrExecutingQuery, err)
 	}
 	return stmt.ExecContext(ctx, data...)
@@ -166,21 +166,21 @@ func MustGenerate[T any](query *QueryTemplate[T], data ...any) *QueryStmt[T] {
 func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, txOrDb Q, data ...any) (*QueryStmt[T], error) {
 	// make sure the query is not nil
 	if query == nil {
-		log.Error("Prepare called on a nil query")
+		log.ErrorContext(ctx, "Prepare called on a nil query")
 		return nil, errors.Join(ErrPreparingQuery, ErrNilQuery)
 	}
 	if query.template == nil {
 		// this should never happen but just in case we will check it anyway
-		log.Error("Prepare called with a nil template")
+		log.ErrorContext(ctx, "Prepare called with a nil template")
 		return nil, errors.Join(ErrPreparingQuery, ErrNilTemplate)
 	}
 	if txOrDb == nil {
-		log.Error("Prepare called with a nil tx or db")
+		log.ErrorContext(ctx, "Prepare called with a nil tx or db")
 		return nil, errors.Join(ErrPreparingQuery, ErrPreparingQuery)
 	}
 	queryStmt, err := Generate(query, data...)
 	if err != nil {
-		log.Error("Error parsing sql template", "error", err)
+		log.ErrorContext(ctx, "Error parsing sql template", "error", err)
 		return nil, errors.Join(ErrPreparingQuery, err)
 	}
 	switch db := any(txOrDb).(type) {
@@ -189,11 +189,11 @@ func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Contex
 	case *sql.Tx:
 		queryStmt.prepared, err = db.PrepareContext(ctx, queryStmt.sql)
 	default:
-		log.Error("Prepare called with an invalid queryable", "error", ErrPreparingQuery)
+		log.ErrorContext(ctx, "Prepare called with an invalid queryable", "error", ErrPreparingQuery)
 		return nil, errors.Join(ErrPreparingQuery, ErrInvalidQueryable)
 	}
 	if err != nil {
-		log.Error("failed to prepare query", "error", err)
+		log.ErrorContext(ctx, "failed to prepare query", "error", err)
 		return nil, errors.Join(ErrPreparingQuery, err)
 	}
 	// register a function to cleanup the query when the context is done
@@ -274,7 +274,7 @@ func (query *QueryStmt[T]) Close() error {
 
 func (query *QueryStmt[T]) ExecContext(ctx context.Context, data ...any) (sql.Result, error) {
 	if query.prepared == nil {
-		log.Error("ExecContext called on a nil prepared query")
+		log.ErrorContext(ctx, "ExecContext called on a nil prepared query")
 		return nil, ErrNilStmt
 	}
 	return query.prepared.ExecContext(ctx, data...)
