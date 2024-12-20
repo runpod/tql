@@ -26,15 +26,7 @@ var (
 	selectAllRegex = regexp.MustCompile(`(?m)(?is)SELECT\s+(.+?)\s+FROM\b`)
 
 	// defaultFuncs contains the default template functions
-	defaultFuncs = FuncMap{
-		"WITH": func(name string, data ...any) string {
-			query := cache[name]
-			log.Debug("WITH", "args", name, "cache", cache, "query", query)
-			return ""
-		},
-	}
-
-	cache = map[string]any{}
+	defaultFuncs = FuncMap{}
 )
 
 // FuncMap is an alias for template.FuncMap to provide custom template functions
