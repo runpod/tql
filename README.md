@@ -15,14 +15,13 @@ TQL is an internal SQL templating engine designed to provide type safety when sc
 - Support for both *sql.DB and *sql.Tx
 - Automatic cleanup of prepared statements via context cancellation
 
-## Usage Example
+## Basic Usage
 
 ```go
 // Define your result structure
 type User struct {
     Id        int             `db:"id"`
     Name      *sql.NullString `db:"name"`
-    UUID      *sql.NullString `db:"uuid"`
     CreatedAt *time.Time      `db:"createdAt"`
 }
 
@@ -40,8 +39,8 @@ if err != nil {
     return err
 }
 
-// Execute the query with automatic preparation
-db, _ := sql.Open("sqlite", "dsn")
+// Execute the query directly
+db, _ := sql.Open("sqlite", ":memory:")
 results, err := tql.Query(query, db, 1)
 
 // Or prepare explicitly for reuse
@@ -49,7 +48,7 @@ prepared, err := tql.Prepare(query, db)
 if err != nil {
     return err
 }
-results, err = tql.Query(prepared, db, 1)
+results, err = prepared.Query(1)
 ```
 
 ## Context Support
@@ -60,12 +59,12 @@ TQL provides context-aware variants of its core functions with automatic cleanup
 ctx := context.Background()
 prepared, err := tql.PrepareContext(query, ctx, db)
 // The prepared statement will be automatically closed when ctx is cancelled
-results, err := tql.QueryContext(prepared, ctx, db, 1)
+results, err := prepared.QueryContext(ctx, 1)
 ```
 
 ## Transaction Support
 
-TQL works seamlessly with both database connections and transactions using a generic DbOrTx interface:
+TQL works seamlessly with both database connections and transactions:
 
 ```go
 tx, err := db.Begin()
@@ -83,6 +82,10 @@ results, err := tql.Query(query, tx, 1)
 TQL automatically maps all columns when using `SELECT *`:
 
 ```go
+type Results struct {
+    User User
+}
+
 query, err := tql.New[Results](`SELECT * FROM User`)
 ```
 
@@ -118,6 +121,18 @@ query, err := tql.New[Results](`
 `, funcs)
 ```
 
+### Field Omission
+
+You can selectively omit fields from being scanned using the `tql` tag:
+
+```go
+type Results struct {
+    User User `tql:"omit=createdAt"`
+}
+
+query, err := tql.New[Results](`SELECT User.* FROM User`)
+```
+
 ### Error Handling
 
 TQL provides detailed error types that can be checked using `errors.Is()`:
@@ -138,9 +153,6 @@ var (
 ## Performance
 
 TQL is designed to be performant while providing type safety. Here are the benchmark results comparing TQL with native SQL operations:
-```bash
-go test -bench=.
-```
 
 ```bash
 goos: darwin
