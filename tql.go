@@ -23,10 +23,18 @@ var (
 	tagRegex = regexp.MustCompile(`(\w+)=([^;]+)`)
 
 	// selectAllRegex matches SELECT statements to parse column selection
-	selectAllRegex = regexp.MustCompile(`(?is)^\s*SELECT\s+(.*?)\s+FROM\b`)
+	selectAllRegex = regexp.MustCompile(`(?m)(?is)SELECT\s+(.+?)\s+FROM\b`)
 
 	// defaultFuncs contains the default template functions
-	defaultFuncs = FuncMap{}
+	defaultFuncs = FuncMap{
+		"WITH": func(name string, data ...any) string {
+			query := cache[name]
+			log.Debug("WITH", "args", name, "cache", cache, "query", query)
+			return ""
+		},
+	}
+
+	cache = map[string]any{}
 )
 
 // FuncMap is an alias for template.FuncMap to provide custom template functions
@@ -85,16 +93,18 @@ func New[S any](sqlTemplate string, maybeFuncs ...FuncMap) (*QueryTemplate[S], e
 		funcs = maybeFuncs[0]
 	}
 	var s S
-	if reflect.ValueOf(s).Kind() != reflect.Struct {
+	v := reflect.ValueOf(s)
+	if v.Kind() != reflect.Struct {
 		log.Error("a struct is required", "received", s)
 		return nil, ErrInvalidType
 	}
-	tmpl, err := template.New("sql").Funcs(template.FuncMap(funcs)).Parse(sqlTemplate)
+	tmpl, err := template.New(v.Type().Name()).Funcs(template.FuncMap(funcs)).Parse(sqlTemplate)
 	if err != nil {
 		log.Error("failed to create query with functions", "error", err)
 		return nil, errors.Join(ErrParsingTemplate, err)
 	}
-	return &QueryTemplate[S]{template: tmpl}, nil
+	query := &QueryTemplate[S]{template: tmpl}
+	return query, nil
 }
 
 // Must creates a new query and panics if an error occurs
@@ -215,10 +225,10 @@ func Parse[T any](sql string) (results struct {
 	var tmp T
 	tableOrTables := reflect.ValueOf(tmp).Type()
 	selectedFields := []string{}
-	match := selectAllRegex.FindStringSubmatch(sql)
+	matches := selectAllRegex.FindAllStringSubmatch(sql, -1)
 	// parse the sql template to see if we are selecting all fields
-	if match != nil {
-		selectAll := strings.TrimSpace(match[1]) == "*"
+	if len(matches) > 0 {
+		selectAll := strings.TrimSpace(matches[0][1]) == "*"
 		// iterate over the fields of the struct to get the indices of the fields that we are selecting
 		for tableOrField := range iterStructFields(tableOrTables) {
 			tableName := ""
@@ -232,8 +242,8 @@ func Parse[T any](sql string) (results struct {
 				tableName = parseFieldName(tableOrField)
 				indices = append(indices, tableOrField.Index[0])
 			}
-			// check if we are selecting all fields from the table with X.*
-			selectAllFromTable := selectAll || containsWords(match[1], tableName+`\.\*`)
+			// to select all fields from the table means we have a "*" or a "X.*" and that the fields are narrowed by a subquery
+			selectAllFromTable := (selectAll || containsWords(matches[0][1], tableName+`\.\*`)) && !matchesContainsWords(matches, tableName+`\.\b`)
 			tag := parseTQLTag(tableOrField)
 			for field := range iterStructFields(tableOrFieldType) {
 				fieldName := parseFieldName(field)
@@ -241,12 +251,11 @@ func Parse[T any](sql string) (results struct {
 				if containsWords(tag.omit, fieldName, qualifiedName) {
 					continue
 				}
-				if !selectAllFromTable && !containsWords(match[1], tableName+`\.`+fieldName, fieldName) {
+				if !matchesContainsWords(matches, tableName+`\.`+fieldName, fieldName) && !selectAllFromTable {
 					log.Debug("column not found in the sql statement", "column", qualifiedName, "sql", sql)
 					continue
 				}
 				selectedFields = append(selectedFields, qualifiedName)
-
 				results.indices = append(results.indices, append(indices[:], field.Index...))
 			}
 
@@ -255,7 +264,7 @@ func Parse[T any](sql string) (results struct {
 				break
 			}
 		}
-		results.sql = strings.Replace(sql, match[1], strings.Join(selectedFields, ", "), 1)
+		results.sql = strings.Replace(sql, matches[0][1], strings.Join(selectedFields, ", "), 1)
 	}
 	return results
 }
@@ -339,9 +348,17 @@ func parseTQLTag(field reflect.StructField) (results struct{ omit string }) {
 	return results
 }
 
+func matchesContainsWords(matches [][]string, words ...string) bool {
+	for _, match := range matches {
+		if containsWords(match[1], words...) {
+			return true
+		}
+	}
+	return false
+}
+
 func containsWords(source string, words ...string) bool {
 	for _, word := range words {
-		log.Debug("containsWords", "source", source, "word", word)
 		if regexp.MustCompile(`\b` + word).MatchString(source) {
 			return true
 		}

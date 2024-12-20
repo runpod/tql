@@ -124,6 +124,32 @@ func TestJoin(t *testing.T) {
 	}
 }
 
+func TestNestedSelect(t *testing.T) {
+	db := mock(t)
+	type Results struct {
+		User    User
+		Account Account
+	}
+	type Query struct {
+		Account Account
+		User    User
+	}
+	query, err := New[Results](`SELECT User.*, Account.id FROM Account INNER JOIN (SELECT User.id,  User.createdAt FROM User where User.id = {{ .User.Id }}) AS User ON User.id = Account.userId`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stmt, err := Prepare(query, db, Query{User: User{Id: 1}, Account: Account{Id: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := stmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Info("results", "results", results)
+}
+
 func TestWithTemplate(t *testing.T) {
 	db := mock(t)
 	type Results struct {

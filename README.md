@@ -150,6 +150,48 @@ var (
 )
 ```
 
+### Nested SELECT Support
+
+TQL supports nested SELECT statements with template parameters. This is useful for complex queries that need to reference values from the template context:
+
+```go
+// Define your nested result structure
+type Results struct {
+    User    User
+    Account Account
+}
+
+// Define the parameters for your query
+type QueryParams struct {
+    Account Account
+    User    User
+}
+
+// Create a query with a nested SELECT
+query, err := tql.New[Results](`
+    SELECT User.*, Account.id 
+    FROM Account 
+    INNER JOIN (
+        SELECT User.id, User.createdAt 
+        FROM User 
+        WHERE User.id = {{ .User.Id }}
+    ) AS User ON User.id = Account.userId
+`)
+
+// Execute with parameters
+stmt, err := tql.Prepare(query, db, QueryParams{
+    User: User{Id: 1},
+    Account: Account{Id: 2},
+})
+results, err := stmt.Query()
+```
+
+This feature allows you to:
+- Use template parameters in subqueries
+- Maintain type safety across nested queries
+- Build complex queries while keeping the code readable
+- Reference template context values in any part of the query
+
 ## Performance
 
 TQL is designed to be performant while providing type safety. Here are the benchmark results comparing TQL with native SQL operations:
