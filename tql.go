@@ -45,7 +45,7 @@ type QueryStmt[T any] struct {
 	template *QueryTemplate[T]
 	prepared *sql.Stmt
 	indices  [][]int
-	sql      string
+	SQL      string
 }
 
 var (
@@ -154,7 +154,7 @@ func Generate[T any](query *QueryTemplate[T], data ...any) (*QueryStmt[T], error
 		return nil, errors.Join(ErrPreparingQuery, err)
 	}
 	results := Parse[T](buf.String())
-	return &QueryStmt[T]{template: query, indices: results.indices, sql: results.sql}, nil
+	return &QueryStmt[T]{template: query, indices: results.indices, SQL: results.sql}, nil
 }
 
 func MustGenerate[T any](query *QueryTemplate[T], data ...any) *QueryStmt[T] {
@@ -187,9 +187,9 @@ func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Contex
 	}
 	switch db := any(txOrDb).(type) {
 	case *sql.DB:
-		queryStmt.prepared, err = db.PrepareContext(ctx, queryStmt.sql)
+		queryStmt.prepared, err = db.PrepareContext(ctx, queryStmt.SQL)
 	case *sql.Tx:
-		queryStmt.prepared, err = db.PrepareContext(ctx, queryStmt.sql)
+		queryStmt.prepared, err = db.PrepareContext(ctx, queryStmt.SQL)
 	default:
 		log.ErrorContext(ctx, "Prepare called with an invalid queryable", "error", ErrPreparingQuery)
 		return nil, errors.Join(ErrPreparingQuery, ErrInvalidQueryable)
@@ -309,14 +309,6 @@ func (query *QueryStmt[T]) QueryContext(ctx context.Context, data ...any) (resul
 
 func (query *QueryStmt[T]) Query(data ...any) (results []T, err error) {
 	return query.QueryContext(context.Background(), data...)
-}
-
-func (query *QueryStmt[T]) SQL() string {
-	if query == nil {
-		log.Error("SQL called on a nil query")
-		return ""
-	}
-	return query.sql
 }
 
 // parseFieldName extracts the field name from struct field tags

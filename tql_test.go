@@ -150,6 +150,33 @@ func TestNestedSelect(t *testing.T) {
 	log.Info("results", "results", results)
 }
 
+func TestNestedSelectTemplate(t *testing.T) {
+	db := mock(t)
+	type Results struct {
+		User    User
+		Account Account
+	}
+	type Query struct {
+		Account Account
+		User    *QueryStmt[User]
+	}
+	userQuery := Must[User](`SELECT User.id, User.createdAt FROM User where User.id = {{ .Id }}`)
+	query, err := New[Results](`SELECT User.*, Account.id FROM Account INNER JOIN ({{ .User.SQL }}) AS User ON User.id = Account.userId`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stmt, err := Prepare(query, db, Query{User: MustGenerate(userQuery, User{Id: 1}), Account: Account{Id: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := stmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Info("results", "results", results)
+}
+
 func TestWithTemplate(t *testing.T) {
 	db := mock(t)
 	type Results struct {
