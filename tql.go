@@ -143,7 +143,7 @@ func Exec[T any, Q DbOrTx](query *QueryTemplate[T], db Q, data ...any) (sql.Resu
 	return ExecContext(query, context.Background(), db, data...)
 }
 
-func Generate[T any](query *QueryTemplate[T], data ...any) (*QueryStmt[T], error) {
+func Generate[T any](query *QueryTemplate[T], data ...any) (string, error) {
 	var buf bytes.Buffer
 	templateData := any(nil)
 	if len(data) > 0 {
@@ -151,18 +151,17 @@ func Generate[T any](query *QueryTemplate[T], data ...any) (*QueryStmt[T], error
 	}
 	if err := query.template.Execute(&buf, templateData); err != nil {
 		log.Error("error executing template", "error", err)
-		return nil, errors.Join(ErrPreparingQuery, err)
+		return "", errors.Join(ErrPreparingQuery, err)
 	}
-	results := Parse[T](buf.String())
-	return &QueryStmt[T]{template: query, indices: results.indices, SQL: results.sql}, nil
+	return buf.String(), nil
 }
 
-func MustGenerate[T any](query *QueryTemplate[T], data ...any) *QueryStmt[T] {
-	stmt, err := Generate(query, data...)
+func MustGenerate[T any](query *QueryTemplate[T], data ...any) string {
+	sql, err := Generate(query, data...)
 	if err != nil {
-		panic(err)
+		return ""
 	}
-	return stmt
+	return sql
 }
 
 func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, txOrDb Q, data ...any) (*QueryStmt[T], error) {
@@ -180,16 +179,18 @@ func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Contex
 		log.ErrorContext(ctx, "Prepare called with a nil tx or db")
 		return nil, errors.Join(ErrPreparingQuery, ErrPreparingQuery)
 	}
-	queryStmt, err := Generate(query, data...)
+	generatedSQL, err := Generate(query, data...)
 	if err != nil {
 		log.ErrorContext(ctx, "Error parsing sql template", "error", err)
 		return nil, errors.Join(ErrPreparingQuery, err)
 	}
+	transformedSQL, indices := Parse[T](generatedSQL)
+	var stmt *sql.Stmt
 	switch db := any(txOrDb).(type) {
 	case *sql.DB:
-		queryStmt.prepared, err = db.PrepareContext(ctx, queryStmt.SQL)
+		stmt, err = db.PrepareContext(ctx, transformedSQL)
 	case *sql.Tx:
-		queryStmt.prepared, err = db.PrepareContext(ctx, queryStmt.SQL)
+		stmt, err = db.PrepareContext(ctx, transformedSQL)
 	default:
 		log.ErrorContext(ctx, "Prepare called with an invalid queryable", "error", ErrPreparingQuery)
 		return nil, errors.Join(ErrPreparingQuery, ErrInvalidQueryable)
@@ -198,6 +199,7 @@ func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Contex
 		log.ErrorContext(ctx, "failed to prepare query", "error", err)
 		return nil, errors.Join(ErrPreparingQuery, err)
 	}
+	queryStmt := &QueryStmt[T]{template: query, indices: indices, SQL: transformedSQL, prepared: stmt}
 	// register a function to cleanup the query when the context is done
 	context.AfterFunc(ctx, func() {
 		queryStmt.Close()
@@ -209,15 +211,13 @@ func Prepare[T any, Q DbOrTx](tqlQuery *QueryTemplate[T], db Q, data ...any) (*Q
 	return PrepareContext(tqlQuery, context.Background(), db, data...)
 }
 
-// Parse parses the SQL template and extracts field information for scanning
-func Parse[T any](sql string) (results struct {
-	sql     string
-	indices [][]int
-}) {
+// Parse parses the SQL string and extracts field information for scanning
+func Parse[T any](sql string) (string, [][]int) {
 	var tmp T
 	tableOrTables := reflect.ValueOf(tmp).Type()
 	selectedFields := []string{}
 	matches := selectAllRegex.FindAllStringSubmatch(sql, -1)
+	allIndices := [][]int{}
 	// parse the sql template to see if we are selecting all fields
 	if len(matches) > 0 {
 		selectAll := strings.TrimSpace(matches[0][1]) == "*"
@@ -248,7 +248,7 @@ func Parse[T any](sql string) (results struct {
 					continue
 				}
 				selectedFields = append(selectedFields, qualifiedName)
-				results.indices = append(results.indices, append(indices[:], field.Index...))
+				allIndices = append(allIndices, append(indices[:], field.Index...))
 			}
 
 			if tableOrFieldType == tableOrTables {
@@ -256,9 +256,9 @@ func Parse[T any](sql string) (results struct {
 				break
 			}
 		}
-		results.sql = strings.Replace(sql, matches[0][1], strings.Join(selectedFields, ", "), 1)
+		sql = strings.Replace(sql, matches[0][1], strings.Join(selectedFields, ", "), 1)
 	}
-	return results
+	return sql, allIndices
 }
 
 func (query *QueryStmt[T]) Close() error {

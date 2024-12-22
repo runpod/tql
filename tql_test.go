@@ -158,10 +158,10 @@ func TestNestedSelectTemplate(t *testing.T) {
 	}
 	type Query struct {
 		Account Account
-		User    *QueryStmt[User]
+		User    string
 	}
-	userQuery := Must[User](`SELECT User.id, User.createdAt FROM User where User.id = {{ .Id }}`)
-	query, err := New[Results](`SELECT User.*, Account.id FROM Account INNER JOIN ({{ .User.SQL }}) AS User ON User.id = Account.userId`)
+	userQuery := Must[User](`SELECT User.* FROM User where User.id = {{ .Id }}`)
+	query, err := New[Results](`SELECT User.*, Account.id FROM Account INNER JOIN ({{ .User }}) AS User ON User.id = Account.userId`)
 	if err != nil {
 		t.Fatal(err)
 	}
