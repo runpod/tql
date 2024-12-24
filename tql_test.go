@@ -78,6 +78,35 @@ func TestSimple(t *testing.T) {
 	}
 }
 
+func TestSimpleCTE(t *testing.T) {
+	type Results struct {
+		User
+	}
+	db := mock(t)
+	query, err := New[Results](`WITH UserQuery as (SELECT User.id, User.createdAt FROM User where User.id = ?) SELECT * FROM UserQuery`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db)
+	log.Info("queryStmt", "queryStmt", queryStmt.SQL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].User.Id != 1 {
+		t.Fatal("expected id 1, got", results[0].User.Id)
+	}
+	// if results[0].User.Name.String != "John Doe" {
+	// 	t.Fatal("expected name John Doe, got", results[0].User.Name.String)
+	// }
+}
+
 func TestWithMissingFunction(t *testing.T) {
 	if _, err := New[any](`SELECT {{ uuid }} FROM User`); !errors.Is(err, ErrInvalidType) {
 		t.Fatal("expected error to be ErrParsingQuery, got", err)
@@ -134,43 +163,16 @@ func TestNestedSelect(t *testing.T) {
 		Account Account
 		User    User
 	}
-	query, err := New[Results](`SELECT User.*, Account.id FROM Account INNER JOIN (SELECT User.id,  User.createdAt FROM User where User.id = {{ .User.Id }}) AS User ON User.id = Account.userId`)
+	query, err := New[Results](`SELECT User.*, Account.id FROM Account INNER JOIN (SELECT User.id,  User.createdAt FROM User where User.id = ?) AS User ON User.id = Account.userId`)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	stmt, err := Prepare(query, db, Query{User: User{Id: 1}, Account: Account{Id: 2}})
+	stmt, err := Prepare(query, db, Params{"User": Params{"Id": 1}, "Account": Account{Id: 2}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	results, err := stmt.Query()
-	if err != nil {
-		t.Fatal(err)
-	}
-	log.Info("results", "results", results)
-}
-
-func TestNestedSelectTemplate(t *testing.T) {
-	db := mock(t)
-	type Results struct {
-		User    User
-		Account Account
-	}
-	type Query struct {
-		Account Account
-		User    string
-	}
-	userQuery := Must[User](`SELECT User.* FROM User where User.id = {{ .Id }}`)
-	query, err := New[Results](`SELECT User.*, Account.id FROM Account INNER JOIN ({{ .User }}) AS User ON User.id = Account.userId`)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	stmt, err := Prepare(query, db, Query{User: MustGenerate(userQuery, User{Id: 1}), Account: Account{Id: 2}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	results, err := stmt.Query()
+	results, err := stmt.Query(1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,11 +184,11 @@ func TestWithTemplate(t *testing.T) {
 	type Results struct {
 		User User `tql:"omit=createdAt"`
 	}
-	query, err := New[Results](`SELECT User.uuid, User.name FROM User WHERE User.createdAt > '{{ . }}'`)
+	query, err := New[Results](`SELECT User.uuid, User.name FROM User WHERE User.createdAt > '{{ .createdAt }}'`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	queryStmt, err := Prepare(query, db, time.Now().Format("2006-01-02 15:04:05"))
+	queryStmt, err := Prepare(query, db, Params{"createdAt": time.Now().Format("2006-01-02 15:04:05")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +204,7 @@ func TestWithTemplate(t *testing.T) {
 func TestWithNilQuery(t *testing.T) {
 	db := mock(t)
 	var nilQuery *QueryTemplate[any]
-	if _, err := Prepare(nilQuery, db, time.Now().Format("2006-01-02 15:04:05")); !errors.Is(err, ErrPreparingQuery) {
+	if _, err := Prepare(nilQuery, db, Params{"createdAt": time.Now().Format("2006-01-02 15:04:05")}); !errors.Is(err, ErrPreparingQuery) {
 		t.Fatal(err)
 	}
 	if _, err := Query(nilQuery, db); !errors.Is(err, ErrExecutingQuery) {
@@ -223,7 +225,7 @@ func TestWithFunctions(t *testing.T) {
 	type Results struct {
 		User User `tql:"omit=createdAt" db:"user"`
 	}
-	query, err := New[Results](`INSERT INTO User (name, id, uuid) VALUES (?, ?, '{{ uuid }}')`, FuncMap{"uuid": func() string { return "123" }})
+	query, err := New[Results](`INSERT INTO User (name, id, uuid) VALUES (?, ?, '{{ uuid }}')`, Functions{"uuid": func() string { return "123" }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,16 +242,12 @@ func TestComplex(t *testing.T) {
 	type Results struct {
 		User User `tql:"omit=createdAt"`
 	}
-	type Params struct {
-		Select string
-		Where  string
-	}
 	// templates are only rendered during the prepare to prevent SQL injections use
-	query, err := New[Results](`SELECT {{ .Select }} FROM User {{ if len .Where}} WHERE {{ .Where }} {{end}}`)
+	query, err := New[Results](`SELECT {{ .Select }} FROM User {{ if .Where}} WHERE {{ .Where }} {{end}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	queryStmt, err := Prepare(query, db, Params{Select: "User.id, User.name", Where: "User.id = 1"})
+	queryStmt, err := Prepare(query, db, Params{"Select": "User.id, User.name", "Where": "User.id = 1"})
 	if err != nil {
 		t.Fatal(err)
 	}

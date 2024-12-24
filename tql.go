@@ -25,30 +25,10 @@ var (
 	// selectAllRegex matches SELECT statements to parse column selection
 	selectAllRegex = regexp.MustCompile(`(?m)(?is)SELECT\s+(.+?)\s+FROM\b`)
 
-	// defaultFuncs contains the default template functions
-	defaultFuncs = FuncMap{}
-)
+	// defaultFunctions contains the default template functions
+	defaultFunctions = Functions{}
 
-// FuncMap is an alias for template.FuncMap to provide custom template functions
-type FuncMap template.FuncMap
-
-type DbOrTx interface {
-	*sql.DB | *sql.Tx
-}
-
-// QueryTemplate implements the Query interface with template and statement preparation
-type QueryTemplate[T any] struct {
-	template *template.Template
-}
-
-type QueryStmt[T any] struct {
-	template *QueryTemplate[T]
-	prepared *sql.Stmt
-	indices  [][]int
-	SQL      string
-}
-
-var (
+	// ErrNilQuery is returned when attempting to use a nil query
 	// ErrNilQuery is returned when attempting to use a nil query
 	ErrNilQuery = errors.New("query is nil")
 	// ErrNilStmt is returned when attempting to use a nil statement
@@ -78,11 +58,36 @@ var (
 	ErrInvalidType = errors.New("failed to create query type parameter is invalid")
 )
 
+// Functions is an alias for template.Functions to provide custom template functions
+type Functions template.FuncMap
+type Params map[string]any
+
+type DbOrTx interface {
+	*sql.DB | *sql.Tx
+}
+
+// QueryTemplate implements the Query interface with template and statement preparation
+type Template interface {
+	Generate(data ...any) (string, error)
+	MustGenerate(data ...any) string
+}
+
+type QueryTemplate[T any] struct {
+	template *template.Template
+}
+
+type QueryStmt[T any] struct {
+	template *QueryTemplate[T]
+	prepared *sql.Stmt
+	indices  [][]int
+	SQL      string
+}
+
 // New creates a new query with default template functions
-func New[S any](sqlTemplate string, maybeFuncs ...FuncMap) (*QueryTemplate[S], error) {
-	funcs := defaultFuncs
-	if len(maybeFuncs) > 0 {
-		funcs = maybeFuncs[0]
+func New[S any](sqlTemplate string, maybeFunctions ...Functions) (*QueryTemplate[S], error) {
+	funcs := defaultFunctions
+	if len(maybeFunctions) > 0 {
+		funcs = maybeFunctions[0]
 	}
 	var s S
 	v := reflect.ValueOf(s)
@@ -90,7 +95,7 @@ func New[S any](sqlTemplate string, maybeFuncs ...FuncMap) (*QueryTemplate[S], e
 		log.Error("a struct is required", "received", s)
 		return nil, ErrInvalidType
 	}
-	tmpl, err := template.New(v.Type().Name()).Funcs(template.FuncMap(funcs)).Parse(sqlTemplate)
+	tmpl, err := template.New(v.Type().Name()).Funcs(template.FuncMap(funcs)).Option("missingkey=zero").Parse(sqlTemplate)
 	if err != nil {
 		log.Error("failed to create query with functions", "error", err)
 		return nil, errors.Join(ErrParsingTemplate, err)
@@ -100,8 +105,8 @@ func New[S any](sqlTemplate string, maybeFuncs ...FuncMap) (*QueryTemplate[S], e
 }
 
 // Must creates a new query and panics if an error occurs
-func Must[S any](sqlTemplate string, maybeFuncs ...FuncMap) *QueryTemplate[S] {
-	q, err := New[S](sqlTemplate, maybeFuncs...)
+func Must[S any](sqlTemplate string, maybePipelines ...Functions) *QueryTemplate[S] {
+	q, err := New[S](sqlTemplate, maybePipelines...)
 	if err != nil {
 		panic(err)
 	}
@@ -259,6 +264,14 @@ func Parse[T any](sql string) (string, [][]int) {
 		sql = strings.Replace(sql, matches[0][1], strings.Join(selectedFields, ", "), 1)
 	}
 	return sql, allIndices
+}
+
+func (query *QueryTemplate[T]) Generate(data ...any) (string, error) {
+	return Generate(query, data...)
+}
+
+func (query *QueryTemplate[T]) MustGenerate(data ...any) string {
+	return MustGenerate(query, data...)
 }
 
 func (query *QueryStmt[T]) Close() error {
