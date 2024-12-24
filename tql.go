@@ -20,7 +20,7 @@ var (
 	log = slog.Default().WithGroup("tql")
 
 	// tagRegex matches key=value pairs in struct tags
-	tagRegex = regexp.MustCompile(`(\w+)=([^;]+)`)
+	tagRegex = regexp.MustCompile(`(\w+)(?:=([^;]*))?`)
 
 	// selectAllRegex matches SELECT statements to parse column selection
 	selectAllRegex = regexp.MustCompile(`(?m)(?is)SELECT\s+(.+?)\s+FROM\b`)
@@ -231,24 +231,25 @@ func Parse[T any](sql string) (string, [][]int) {
 			tableName := ""
 			tableOrFieldType := tableOrField.Type
 			indices := []int{}
+			tableOrFieldTag := parseTQLTag(tableOrField)
 			if tableOrFieldType.Kind() != reflect.Struct {
 				// this means that this is a single table query
 				tableOrFieldType = tableOrTables
 				tableName = tableOrTables.Name()
 			} else {
-				tableName = parseFieldName(tableOrField)
+				tableName = tableOrFieldTag.field // parseFieldName(tableOrField)
 				indices = append(indices, tableOrField.Index[0])
 			}
 			// to select all fields from the table means we have a "*" or a "X.*" and that the fields are narrowed by a subquery
 			selectAllFromTable := (selectAll || containsWords(matches[0][1], tableName+`\.\*`)) && !matchesContainsWords(matches, tableName+`\.\b`)
-			tag := parseTQLTag(tableOrField)
 			for field := range iterStructFields(tableOrFieldType) {
-				fieldName := parseFieldName(field)
-				qualifiedName := tableName + "." + fieldName
-				if containsWords(tag.omit, fieldName, qualifiedName) {
+				// fieldName := parseFieldName(field)
+				fieldTag := parseTQLTag(field)
+				qualifiedName := tableName + "." + fieldTag.field
+				if fieldTag.omit == "true" || containsWords(tableOrFieldTag.omit, fieldTag.field, qualifiedName) {
 					continue
 				}
-				if !matchesContainsWords(matches, tableName+`\.`+fieldName, fieldName) && !selectAllFromTable {
+				if !matchesContainsWords(matches, tableName+`\.`+fieldTag.field, fieldTag.field) && !selectAllFromTable {
 					log.Debug("column not found in the sql statement", "column", qualifiedName, "sql", sql)
 					continue
 				}
@@ -324,22 +325,23 @@ func (query *QueryStmt[T]) Query(data ...any) (results []T, err error) {
 	return query.QueryContext(context.Background(), data...)
 }
 
-// parseFieldName extracts the field name from struct field tags
-func parseFieldName(field reflect.StructField) string {
-	fieldName := field.Tag.Get("db")
-	if fieldName == "" {
-		fieldName = field.Name[:1] + field.Name[1:]
-	}
-	return fieldName
-}
-
 // parseTQLTag parses the tql struct tag options
-func parseTQLTag(field reflect.StructField) (results struct{ omit string }) {
+func parseTQLTag(field reflect.StructField) (results struct {
+	omit  string
+	field string
+}) {
 	matches := tagRegex.FindAllStringSubmatch(field.Tag.Get("tql"), -1)
+	results.field = field.Name
 	for _, match := range matches {
-		switch strings.TrimSpace(match[1]) {
-		case "omit":
-			results.omit = strings.TrimSpace(match[2])
+		if match[2] != "" {
+			switch strings.TrimSpace(match[1]) {
+			case "-":
+				results.omit = "true"
+			case "omit":
+				results.omit = strings.TrimSpace(match[2])
+			}
+		} else {
+			results.field = strings.TrimSpace(match[0])
 		}
 	}
 	return results

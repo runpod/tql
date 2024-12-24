@@ -12,7 +12,7 @@ import (
 )
 
 type Account struct {
-	Id int `db:"id"`
+	Id int `tql:"id"`
 }
 
 func mock(t testing.TB) *sql.DB {
@@ -44,10 +44,10 @@ func mock(t testing.TB) *sql.DB {
 }
 
 type User struct {
-	Id        int             `db:"id"`
-	Name      *sql.NullString `db:"name"`
-	UUID      *sql.NullString `db:"uuid"`
-	CreatedAt *time.Time      `db:"createdAt"`
+	Id        int             `tql:"id"`
+	Name      *sql.NullString `tql:"name"`
+	UUID      *sql.NullString `tql:"uuid"`
+	CreatedAt *time.Time      `tql:"createdAt"`
 }
 
 func TestSimple(t *testing.T) {
@@ -105,6 +105,38 @@ func TestSimpleCTE(t *testing.T) {
 	// if results[0].User.Name.String != "John Doe" {
 	// 	t.Fatal("expected name John Doe, got", results[0].User.Name.String)
 	// }
+}
+
+func TestWithOmitField(t *testing.T) {
+	db := mock(t)
+	type Results struct {
+		User struct {
+			Id   string  `tql:"id"`
+			Name *string `tql:"omit"`
+		}
+	}
+	query, err := New[Results](`SELECT User.id, User.name FROM User`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Info("queryStmt", "queryStmt", queryStmt.SQL)
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].User.Id != "1" {
+		t.Fatal("expected id 1, got", results[0].User.Id)
+	}
+	if results[0].User.Name != nil {
+		t.Fatal("expected name to be empty, got", results[0].User.Name)
+	}
 }
 
 func TestWithMissingFunction(t *testing.T) {
@@ -223,7 +255,7 @@ func TestWithNilTemplate(t *testing.T) {
 func TestWithFunctions(t *testing.T) {
 	db := mock(t)
 	type Results struct {
-		User User `tql:"omit=createdAt" db:"user"`
+		User User `tql:"user;omit=createdAt"`
 	}
 	query, err := New[Results](`INSERT INTO User (name, id, uuid) VALUES (?, ?, '{{ uuid }}')`, Functions{"uuid": func() string { return "123" }})
 	if err != nil {
