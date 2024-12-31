@@ -62,6 +62,11 @@ var (
 type Functions template.FuncMap
 type Params map[string]any
 
+type Nullable[T any] struct {
+	Value T
+	Valid bool
+}
+
 type DbOrTx interface {
 	*sql.DB | *sql.Tx
 }
@@ -235,7 +240,7 @@ func Parse[T any](sql string) (string, [][]int) {
 			if tableOrFieldType.Kind() != reflect.Struct {
 				// this means that this is a single table query
 				tableOrFieldType = tableOrTables
-				tableName = tableOrTables.Name()
+				// tableName = tableOrTables.Name()
 			} else {
 				tableName = tableOrFieldTag.field // parseFieldName(tableOrField)
 				indices = append(indices, tableOrField.Index[0])
@@ -245,7 +250,12 @@ func Parse[T any](sql string) (string, [][]int) {
 			for field := range iterStructFields(tableOrFieldType) {
 				// fieldName := parseFieldName(field)
 				fieldTag := parseTQLTag(field)
-				qualifiedName := tableName + "." + fieldTag.field
+				var qualifiedName string
+				if tableName != "" {
+					qualifiedName = tableName + "." + fieldTag.field
+				} else {
+					qualifiedName = fieldTag.field
+				}
 				if fieldTag.omit == "true" || containsWords(tableOrFieldTag.omit, fieldTag.field, qualifiedName) {
 					continue
 				}
@@ -333,14 +343,14 @@ func parseTQLTag(field reflect.StructField) (results struct {
 	matches := tagRegex.FindAllStringSubmatch(field.Tag.Get("tql"), -1)
 	results.field = field.Name
 	for _, match := range matches {
-		if match[2] != "" {
+		value := strings.TrimSpace(match[2])
+		if value != "" {
 			switch strings.TrimSpace(match[1]) {
-			case "-":
-				results.omit = "true"
 			case "omit":
 				results.omit = strings.TrimSpace(match[2])
 			}
-		} else {
+			continue
+		} else if value != "-" {
 			results.field = strings.TrimSpace(match[0])
 		}
 	}

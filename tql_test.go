@@ -78,6 +78,61 @@ func TestSimple(t *testing.T) {
 	}
 }
 
+func TestSimpleWithSingleTable(t *testing.T) {
+	type Results struct {
+		Id        int       `tql:"id"`
+		Name      string    `tql:"name"`
+		CreatedAt time.Time `tql:"createdAt"`
+	}
+	db := mock(t)
+	query, err := New[Results](`SELECT User.id, User.name, User.createdAt FROM User where User.id = ?`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
+func TestSimpleWithSingleTableWithName(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id = ?`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name.String != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
 func TestSimpleCTE(t *testing.T) {
 	type Results struct {
 		User
