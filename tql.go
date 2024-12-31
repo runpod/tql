@@ -22,13 +22,15 @@ var (
 	// tagRegex matches key=value pairs in struct tags
 	tagRegex = regexp.MustCompile(`(\w+)(?:=([^;]*))?`)
 
-	// selectAllRegex matches SELECT statements to parse column selection
-	selectAllRegex = regexp.MustCompile(`(?m)(?is)SELECT\s+(.+?)\s+FROM\b`)
+	// selectRegex matches SELECT statements to parse column selection
+	selectRegex = regexp.MustCompile(`(?m)(?is)SELECT\s+(.+?)\s+FROM\b`)
+
+	// cteRegex matches CTEs to parse column selection
+	cteRegex = regexp.MustCompile(`(?ms)(?:\bWITH\s+)?([a-zA-Z_][a-zA-Z0-9_]+)\s+AS\s*\((.*?)\)`)
 
 	// defaultFunctions contains the default template functions
 	defaultFunctions = Functions{}
 
-	// ErrNilQuery is returned when attempting to use a nil query
 	// ErrNilQuery is returned when attempting to use a nil query
 	ErrNilQuery = errors.New("query is nil")
 	// ErrNilStmt is returned when attempting to use a nil statement
@@ -56,6 +58,9 @@ var (
 
 	// ErrInvalidType is returned when the type parameter is not a struct
 	ErrInvalidType = errors.New("failed to create query type parameter is invalid")
+
+	// ErrUnsupportedCTE is returned when the sql template contains unsupported CTEs
+	ErrUnsupportedCTE = errors.New("unsupported CTEs in sql template")
 )
 
 // Functions is an alias for template.Functions to provide custom template functions
@@ -99,6 +104,10 @@ func New[S any](sqlTemplate string, maybeFunctions ...Functions) (*QueryTemplate
 	if v.Kind() != reflect.Struct {
 		log.Error("a struct is required", "received", s)
 		return nil, ErrInvalidType
+	}
+	if strings.HasPrefix(strings.TrimSpace(sqlTemplate), "WITH") {
+		log.Error("sql template contains unsupported CTEs", "sql", sqlTemplate)
+		return nil, ErrUnsupportedCTE
 	}
 	tmpl, err := template.New(v.Type().Name()).Funcs(template.FuncMap(funcs)).Option("missingkey=zero").Parse(sqlTemplate)
 	if err != nil {
@@ -226,11 +235,12 @@ func Parse[T any](sql string) (string, [][]int) {
 	var tmp T
 	tableOrTables := reflect.ValueOf(tmp).Type()
 	selectedFields := []string{}
-	matches := selectAllRegex.FindAllStringSubmatch(sql, -1)
+	matches := selectRegex.FindAllStringSubmatch(sql, -1)
 	allIndices := [][]int{}
 	// parse the sql template to see if we are selecting all fields
 	if len(matches) > 0 {
 		selectAll := strings.TrimSpace(matches[0][1]) == "*"
+		splitFields := strings.Split(matches[0][1], ",")
 		// iterate over the fields of the struct to get the indices of the fields that we are selecting
 		for tableOrField := range iterStructFields(tableOrTables) {
 			tableName := ""
@@ -240,7 +250,6 @@ func Parse[T any](sql string) (string, [][]int) {
 			if tableOrFieldType.Kind() != reflect.Struct {
 				// this means that this is a single table query
 				tableOrFieldType = tableOrTables
-				// tableName = tableOrTables.Name()
 			} else {
 				tableName = tableOrFieldTag.field // parseFieldName(tableOrField)
 				indices = append(indices, tableOrField.Index[0])
@@ -259,11 +268,11 @@ func Parse[T any](sql string) (string, [][]int) {
 				if fieldTag.omit == "true" || containsWords(tableOrFieldTag.omit, fieldTag.field, qualifiedName) {
 					continue
 				}
-				if !matchesContainsWords(matches, tableName+`\.`+fieldTag.field, fieldTag.field) && !selectAllFromTable {
+				if !matchesContainsWords(matches, qualifiedName, tableName+`\.`+fieldTag.field, fieldTag.field) && !selectAllFromTable {
 					log.Debug("column not found in the sql statement", "column", qualifiedName, "sql", sql)
 					continue
 				}
-				selectedFields = append(selectedFields, qualifiedName)
+				selectedFields = append(selectedFields, toSelectedField(qualifiedName, splitFields))
 				allIndices = append(allIndices, append(indices[:], field.Index...))
 			}
 
@@ -355,6 +364,18 @@ func parseTQLTag(field reflect.StructField) (results struct {
 		}
 	}
 	return results
+}
+
+func toSelectedField(qualifiedName string, selectedFields []string) string {
+	for _, field := range selectedFields {
+		maybeAlias := strings.Split(field, " as ")
+		if len(maybeAlias) > 1 {
+			if strings.TrimSpace(maybeAlias[1]) == qualifiedName {
+				return maybeAlias[0] + " as " + qualifiedName
+			}
+		}
+	}
+	return qualifiedName
 }
 
 func matchesContainsWords(matches [][]string, words ...string) bool {

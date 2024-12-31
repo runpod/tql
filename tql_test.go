@@ -108,6 +108,36 @@ func TestSimpleWithSingleTable(t *testing.T) {
 	}
 }
 
+func TestSimpleWithSingleTableAndAliasField(t *testing.T) {
+	type Results struct {
+		UserId    int       `tql:"userId"`
+		Name      string    `tql:"name"`
+		CreatedAt time.Time `tql:"createdAt"`
+	}
+	db := mock(t)
+	query, err := New[Results](`SELECT User.id as userId, User.name, User.createdAt FROM User where User.id = ?`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].UserId != 1 {
+		t.Fatal("expected id 1, got", results[0].UserId)
+	}
+	if results[0].Name != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
 func TestSimpleWithSingleTableWithName(t *testing.T) {
 	db := mock(t)
 	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id = ?`)
@@ -131,35 +161,6 @@ func TestSimpleWithSingleTableWithName(t *testing.T) {
 	if results[0].Name.String != "John Doe" {
 		t.Fatal("expected name John Doe, got", results[0].Name)
 	}
-}
-
-func TestSimpleCTE(t *testing.T) {
-	type Results struct {
-		User
-	}
-	db := mock(t)
-	query, err := New[Results](`WITH UserQuery as (SELECT User.id, User.createdAt FROM User where User.id = ?) SELECT * FROM UserQuery`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	queryStmt, err := Prepare(query, db)
-	log.Info("queryStmt", "queryStmt", queryStmt.SQL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	results, err := queryStmt.Query(1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(results) != 1 {
-		t.Fatal("expected 1 result, got", len(results))
-	}
-	if results[0].User.Id != 1 {
-		t.Fatal("expected id 1, got", results[0].User.Id)
-	}
-	// if results[0].User.Name.String != "John Doe" {
-	// 	t.Fatal("expected name John Doe, got", results[0].User.Name.String)
-	// }
 }
 
 func TestWithOmitField(t *testing.T) {
@@ -266,6 +267,33 @@ func TestNestedSelect(t *testing.T) {
 	log.Info("results", "results", results)
 }
 
+func TestNestedSelectWithAlias(t *testing.T) {
+	db := mock(t)
+	type Results struct {
+		User struct {
+			UserId int `tql:"userId"`
+		}
+		Account Account
+	}
+	type Query struct {
+		Account Account
+		User    User
+	}
+	query, err := New[Results](`SELECT User.*, Account.id FROM Account INNER JOIN (SELECT User.id as userId,  User.createdAt FROM User where User.id = ?) AS User ON User.userId = Account.userId`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stmt, err := Prepare(query, db, Params{"User": Params{"Id": 1}, "Account": Account{Id: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := stmt.Query(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Info("results", "results", results)
+}
 func TestWithTemplate(t *testing.T) {
 	db := mock(t)
 	type Results struct {
