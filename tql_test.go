@@ -299,21 +299,44 @@ func TestWithTemplate(t *testing.T) {
 	type Results struct {
 		User User `tql:"omit=createdAt"`
 	}
-	query, err := New[Results](`SELECT User.uuid, User.name FROM User WHERE User.createdAt > '{{ .createdAt }}'`)
+	query, err := New[User](`SELECT uuid, name FROM User WHERE User.createdAt > '{{ .createdAt }}'`)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	queryStmt, err := Prepare(query, db, Params{"createdAt": time.Now().Format("2006-01-02 15:04:05")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	results, err := queryStmt.Query()
+	slog.Info("results", "results", results)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(results) != 1 {
 		t.Fatal("expected 0 results, got", len(results))
 	}
+}
+
+func TestWithConditionalTable(t *testing.T) {
+	db := mock(t)
+	type Results struct {
+		User    User
+		Account Account
+	}
+	query, err := New[Results](`SELECT {{ .Table }}.id FROM {{ .Table }} WHERE {{ .Table }}.id = ?`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt, err := Prepare(query, db, Params{"Table": "User"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := stmt.Query(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slog.Info("results", "results", results)
 }
 
 func TestWithNilQuery(t *testing.T) {
