@@ -389,7 +389,11 @@ func matchesContainsWords(matches [][]string, words ...string) bool {
 
 func containsWords(source string, words ...string) bool {
 	for _, word := range words {
-		if regexp.MustCompile(`(^|[^.])\b` + word).MatchString(source) {
+		regex, err := regexp.Compile(`(^|[^.])\b` + word)
+		if err != nil {
+			return false
+		}
+		if regex.MatchString(source) {
 			return true
 		}
 	}
