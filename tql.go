@@ -278,6 +278,10 @@ func Exec[T any, Q DbOrTx](query *QueryTemplate[T], db Q, data ...any) (sql.Resu
 //   - string: The generated SQL string
 //   - error: If the template execution fails
 func Generate[T any](query *QueryTemplate[T], data ...any) (string, error) {
+	if query == nil {
+		log.Error("Generate called on a nil query")
+		return "", ErrNilQuery
+	}
 	var buf bytes.Buffer
 	templateData := any(nil)
 	if len(data) > 0 {
@@ -300,6 +304,7 @@ func Generate[T any](query *QueryTemplate[T], data ...any) (string, error) {
 // Returns:
 //   - string: The generated SQL string or an empty string if the template execution fails
 func MustGenerate[T any](query *QueryTemplate[T], data ...any) string {
+
 	sql, err := Generate(query, data...)
 	if err != nil {
 		panic(err)
@@ -408,13 +413,12 @@ func Parse[T any](sql string) (string, [][]int) {
 				// this means that this is a single table query
 				tableOrFieldType = tableOrTables
 			} else {
-				tableName = tableOrFieldTag.field // parseFieldName(tableOrField)
+				tableName = tableOrFieldTag.field
 				indices = append(indices, tableOrField.Index[0])
 			}
 			// to select all fields from the table means we have a "*" or a "X.*" and that the fields are narrowed by a subquery
 			selectAllFromTable := (selectAll || containsWords(matches[0][1], tableName+`\.\*`)) && !matchesContainsWords(matches, tableName+`\.\b`)
 			for field := range iterStructFields(tableOrFieldType) {
-				// fieldName := parseFieldName(field)
 				fieldTag := parseTQLTag(field)
 				var qualifiedName string
 				if tableName != "" {
@@ -422,6 +426,7 @@ func Parse[T any](sql string) (string, [][]int) {
 				} else {
 					qualifiedName = fieldTag.field
 				}
+				// check if the field is omitted via the tql tag or the table tql tag
 				if fieldTag.omit == "true" || containsWords(tableOrFieldTag.omit, fieldTag.field, qualifiedName) {
 					continue
 				}
@@ -502,6 +507,10 @@ func (query *QueryStmt[T]) Close() error {
 //   - sql.Result: The result of the query execution
 //   - error: If query execution fails
 func (query *QueryStmt[T]) ExecContext(ctx context.Context, data ...any) (sql.Result, error) {
+	if query == nil {
+		log.ErrorContext(ctx, "ExecContext called on a nil query")
+		return nil, ErrNilQuery
+	}
 	if query.prepared == nil {
 		log.ErrorContext(ctx, "ExecContext called on a nil prepared query")
 		return nil, ErrNilStmt
@@ -521,6 +530,10 @@ func (query *QueryStmt[T]) ExecContext(ctx context.Context, data ...any) (sql.Re
 //   - sql.Result: The result of the query execution
 //   - error: If query execution fails
 func (query *QueryStmt[T]) Exec(data ...any) (sql.Result, error) {
+	if query == nil {
+		log.Error("Exec called on a nil query")
+		return nil, ErrNilQuery
+	}
 	return query.ExecContext(context.Background(), data...)
 }
 
@@ -536,6 +549,10 @@ func (query *QueryStmt[T]) Exec(data ...any) (sql.Result, error) {
 //   - []T: A slice of results of type T
 //   - error: If query execution fails
 func (query *QueryStmt[T]) QueryContext(ctx context.Context, data ...any) (results []T, err error) {
+	if query == nil {
+		log.ErrorContext(ctx, "QueryContext called on a nil query")
+		return nil, ErrNilQuery
+	}
 	var scanDest T
 	scanDestValue := reflect.ValueOf(&scanDest).Elem()
 	fields := []any{}
@@ -569,6 +586,10 @@ func (query *QueryStmt[T]) QueryContext(ctx context.Context, data ...any) (resul
 //   - []T: A slice of results of type T
 //   - error: If query execution fails
 func (query *QueryStmt[T]) Query(data ...any) (results []T, err error) {
+	if query == nil {
+		log.Error("Query called on a nil query")
+		return nil, ErrNilQuery
+	}
 	return query.QueryContext(context.Background(), data...)
 }
 
