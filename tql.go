@@ -64,8 +64,8 @@ var (
 )
 
 // Functions is an alias for template.Functions to provide custom template functions
-type Functions template.FuncMap
-type Params map[string]any
+type Functions = template.FuncMap
+type Params = map[string]any
 
 type DbOrTx interface {
 	*sql.DB | *sql.Tx
