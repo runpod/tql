@@ -8,12 +8,11 @@ TQL is an internal SQL templating engine designed to provide type safety when sc
 - Type-safe scanning of query results into Go structs with automatic field mapping
 - Minimal abstraction over raw SQL - write queries naturally with full SQL functionality
 - Support for complex joins and nested result structures through struct embedding
-- Prepared statement caching for optimal performance
+- Supports Prepared Statements
 - Zero external dependencies beyond the Go standard library
 - Compile-time validation of struct field tags and query parameters
 - Automatic handling of NULL values through pointer types
 - Support for both *sql.DB and *sql.Tx
-- Automatic cleanup of prepared statements via context cancellation
 
 ## Basic Usage
 
