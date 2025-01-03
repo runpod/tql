@@ -427,10 +427,10 @@ func Parse[T any](sql string) (string, [][]int) {
 					qualifiedName = fieldTag.field
 				}
 				// check if the field is omitted via the tql tag or the table tql tag
-				if fieldTag.omit == "true" || containsWords(tableOrFieldTag.omit, fieldTag.field, qualifiedName) {
+				if fieldTag.omit == "true" || containsWords(tableOrFieldTag.omit, fieldTag.field, tableName+`\.`+fieldTag.field) {
 					continue
 				}
-				if !matchesContainsWords(matches, qualifiedName, tableName+`\.`+fieldTag.field, fieldTag.field) && !selectAllFromTable {
+				if !matchesContainsWords(matches, tableName+`\.`+fieldTag.field, fieldTag.field) && !selectAllFromTable {
 					log.Debug("column not found in the sql statement", "column", qualifiedName, "sql", sql)
 					continue
 				}
