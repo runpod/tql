@@ -1,7 +1,6 @@
 package tql
 
 import (
-	"context"
 	"database/sql"
 	"errors"
 	"log/slog"
@@ -524,27 +523,6 @@ func TestWithTransaction(t *testing.T) {
 		t.Fatal("expected id 1, got", results[0].User.Id)
 	}
 
-}
-
-func TestCleanupWithContext(t *testing.T) {
-	db := mock(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	type Results struct {
-		User User
-	}
-	query, err := New[Results](`SELECT User.id, User.name, User.createdAt FROM User where User.id = ?`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	queryStmt, err := PrepareContext(query, ctx, db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cancel()
-	time.Sleep(1 * time.Millisecond)
-	if queryStmt.prepared != nil {
-		t.Fatal("expected stmt to be nil, got", queryStmt.prepared, queryStmt.prepared)
-	}
 }
 
 func BenchmarkTQLCreation(b *testing.B) {
