@@ -114,7 +114,7 @@ type QueryStmt[T any] struct {
 // Example usage:
 //
 //	query, err := New[User]("SELECT * FROM users WHERE created_at > {{ .since }}")
-//	query, err := New[UserWithAccount]("SELECT u.*, a.* FROM users u JOIN accounts a ON u.id = a.user_id")
+//	query, err := New[UserWithAccount]("SELECT Users.*, Accounts.* FROM Users JOIN Accounts ON Users.id = Accounts.user_id")
 //
 // Optional template functions can be provided to extend template capabilities. see https://pkg.go.dev/text/template#FuncMap for more details.
 // If no functions are provided, default functions will be used.
@@ -298,12 +298,11 @@ func Generate[T any](query *QueryTemplate[T], data ...any) (string, error) {
 //   - data: Optional variadic parameters to pass to the query execution
 //
 // Returns:
-//   - string: The generated SQL string
-//   - error: If the template execution fails
+//   - string: The generated SQL string or an empty string if the template execution fails
 func MustGenerate[T any](query *QueryTemplate[T], data ...any) string {
 	sql, err := Generate(query, data...)
 	if err != nil {
-		return ""
+		panic(err)
 	}
 	return sql
 }
