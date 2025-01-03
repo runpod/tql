@@ -310,6 +310,7 @@ func MustGenerate[T any](query *QueryTemplate[T], data ...any) string {
 
 // PrepareContext prepares a QueryTemplate with the given context, database connection, and optional template data.
 // It returns a prepared statement and any error that occurred.
+// NOTE: Like Go Stmt, the prepared statement is invalidated once the transaction is committed or rolled back. You are responsible for closing the statement or re-preparing it.
 //
 // The type parameter T specifies the result type, which must be a struct. See New[S] for more details.
 // The type parameter Q must be either *sql.DB or *sql.Tx.
@@ -359,10 +360,6 @@ func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Contex
 		return nil, errors.Join(ErrPreparingQuery, err)
 	}
 	queryStmt := &QueryStmt[T]{template: query, indices: indices, SQL: transformedSQL, prepared: stmt}
-	// register a function to cleanup the query when the context is done
-	context.AfterFunc(ctx, func() {
-		queryStmt.Close()
-	})
 	return queryStmt, nil
 }
 
@@ -442,6 +439,7 @@ func Parse[T any](sql string) (string, [][]int) {
 				break
 			}
 		}
+		// replace the selected fields with the qualified names
 		sql = strings.Replace(sql, matches[0][1], strings.Join(selectedFields, ", "), 1)
 	}
 	return sql, allIndices
