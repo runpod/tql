@@ -67,25 +67,22 @@ var (
 type Functions template.FuncMap
 type Params map[string]any
 
-type Nullable[T any] struct {
-	Value T
-	Valid bool
-}
-
 type DbOrTx interface {
 	*sql.DB | *sql.Tx
 }
 
-// QueryTemplate implements the Query interface with template and statement preparation
+// Template is an interface that represents a template that can be generated
 type Template interface {
 	Generate(data ...any) (string, error)
 	MustGenerate(data ...any) string
 }
 
+// QueryTemplate is a struct that represents a template that can be generated
 type QueryTemplate[T any] struct {
 	template *template.Template
 }
 
+// QueryStmt is a struct that represents a prepared statement that can be executed
 type QueryStmt[T any] struct {
 	template *QueryTemplate[T]
 	prepared *sql.Stmt
@@ -93,13 +90,48 @@ type QueryStmt[T any] struct {
 	SQL      string
 }
 
-// New creates a new query with default template functions
-func New[S any](sqlTemplate string, maybeFunctions ...Functions) (*QueryTemplate[S], error) {
+// New creates a new QueryTemplate with the given SQL template and optional template functions.
+// The type parameter T must be a struct that is a table or a struct that contains tables.
+//
+// Example table struct:
+//
+//	type User struct {
+//	    ID        int
+//	    Name      string
+//	    CreatedAt time.Time
+//	}
+//
+// Example struct containing tables:
+//
+//	type UserWithAccount struct {
+//	    User    User    `tql:"user"` // optional tag to specify the table alias
+//	    Account Account `tql:"account"` // optional tag to specify the table alias
+//	}
+//
+// The sqlTemplate parameter supports Go template syntax for dynamic SQL generation.
+// Template variables can be accessed using {{ .VarName }} syntax. see https://pkg.go.dev/text/template for more details.
+//
+// Example usage:
+//
+//	query, err := New[User]("SELECT * FROM users WHERE created_at > {{ .since }}")
+//	query, err := New[UserWithAccount]("SELECT u.*, a.* FROM users u JOIN accounts a ON u.id = a.user_id")
+//
+// Optional template functions can be provided to extend template capabilities. see https://pkg.go.dev/text/template#FuncMap for more details.
+// If no functions are provided, default functions will be used.
+//
+// Parameters:
+//   - sqlTemplate: The SQL template string to use for the query.
+//   - maybeFunctions: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - *QueryTemplate[S]: A new QueryTemplate with the given SQL template and optional template functions.
+//   - error: If the query template parsing fails
+func New[T any](sqlTemplate string, maybeFunctions ...Functions) (*QueryTemplate[T], error) {
 	funcs := defaultFunctions
 	if len(maybeFunctions) > 0 {
 		funcs = maybeFunctions[0]
 	}
-	var s S
+	var s T
 	v := reflect.ValueOf(s)
 	if v.Kind() != reflect.Struct {
 		log.Error("a struct is required", "received", s)
@@ -114,23 +146,68 @@ func New[S any](sqlTemplate string, maybeFunctions ...Functions) (*QueryTemplate
 		log.Error("failed to create query with functions", "error", err)
 		return nil, errors.Join(ErrParsingTemplate, err)
 	}
-	query := &QueryTemplate[S]{template: tmpl}
+	query := &QueryTemplate[T]{template: tmpl}
 	return query, nil
 }
 
-// Must creates a new query and panics if an error occurs
-func Must[S any](sqlTemplate string, maybePipelines ...Functions) *QueryTemplate[S] {
-	q, err := New[S](sqlTemplate, maybePipelines...)
+// Must creates a new QueryTemplate and panics if an error occurs.
+// This is useful for queries that are known to be valid at compile time.
+// The type parameter T must be a struct that is a table or a struct that contains tables. see New[T] for more details.
+//
+// Example usage:
+//
+//	query := Must[User]("SELECT * FROM users WHERE id = ?")
+//
+// Parameters:
+//   - sqlTemplate: The SQL template string to use for the query.
+//   - maybePipelines: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - *QueryTemplate[S]: A new QueryTemplate with the given SQL template and optional template functions.
+//   - error: If the query template parsing fails
+//
+// Note: Only use Must for queries that are guaranteed to be valid, otherwise use New to handle errors gracefully.
+func Must[T any](sqlTemplate string, maybePipelines ...Functions) *QueryTemplate[T] {
+	q, err := New[T](sqlTemplate, maybePipelines...)
 	if err != nil {
 		panic(err)
 	}
 	return q
 }
 
+// Query executes a QueryTemplate with the given database connection and optional template data.
+// It returns a slice of results of type T and any error that occurred.
+//
+// The type parameter T specifies the result type, which must be a struct. See New[T] for more details.
+// The type parameter Q must be either *sql.DB or *sql.Tx.
+//
+// Parameters:
+//   - query: The QueryTemplate to execute. Must not be nil.
+//   - db: Database connection, can be either *sql.DB or *sql.Tx
+//   - data: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - []T: A slice of results of type T
+//   - error: If query preparation or execution fails
 func Query[T any, Q DbOrTx](query *QueryTemplate[T], db Q, data ...any) ([]T, error) {
 	return QueryContext(query, context.Background(), db, data...)
 }
 
+// QueryContext executes a QueryTemplate with the given context, database connection, and optional template data.
+// It returns a slice of results of type T and any error that occurred.
+//
+// The type parameter T specifies the result type, which must be a struct. See New[S] for more details.
+// The type parameter Q must be either *sql.DB or *sql.Tx.
+//
+// Parameters:
+//   - query: The QueryTemplate to execute. Must not be nil.
+//   - ctx: The context for the query execution. Used for cancellation and timeouts.
+//   - db: Database connection, can be either *sql.DB or *sql.Tx
+//   - data: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - []T: A slice of results of type T
+//   - error: If query preparation or execution fails
 func QueryContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, txOrDb Q, data ...any) ([]T, error) {
 	results := []T{}
 	if query == nil {
@@ -145,6 +222,21 @@ func QueryContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context,
 	return stmt.QueryContext(ctx, data...)
 }
 
+// ExecContext executes a QueryTemplate with the given context, database connection, and optional template data.
+// It returns the result of the query execution and any error that occurred.
+//
+// The type parameter T specifies the result type, which must be a struct. See New[S] for more details.
+// The type parameter Q must be either *sql.DB or *sql.Tx.
+//
+// Parameters:
+//   - query: The QueryTemplate to execute. Must not be nil.
+//   - ctx: The context for the query execution. Used for cancellation and timeouts.
+//   - db: Database connection, can be either *sql.DB or *sql.Tx
+//   - data: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - sql.Result containing the execution results
+//   - error if query preparation or execution fails
 func ExecContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, db Q, data ...any) (sql.Result, error) {
 	if query == nil {
 		log.ErrorContext(ctx, "Execute called on a nil query", "error", ErrNilQuery)
@@ -158,10 +250,33 @@ func ExecContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, 
 	return stmt.ExecContext(ctx, data...)
 }
 
+// Exec executes a QueryTemplate with the given database connection and optional template data.
+// It returns the result of the query execution and any error that occurred.
+//
+// The type parameter T specifies the result type, which must be a struct. See New[S] for more details.
+// The type parameter Q must be either *sql.DB or *sql.Tx.
+//
+// Parameters:
+//   - query: The QueryTemplate to execute. Must not be nil.
+//   - db: Database connection, can be either *sql.DB or *sql.Tx
+//   - data: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - sql.Result containing the execution results
+//   - error if query preparation or execution fails
 func Exec[T any, Q DbOrTx](query *QueryTemplate[T], db Q, data ...any) (sql.Result, error) {
 	return ExecContext(query, context.Background(), db, data...)
 }
 
+// Generate generates the SQL template with the given data and returns the generated SQL string and any error that occurred.
+//
+// Parameters:
+//   - query: The QueryTemplate to generate. Must not be nil.
+//   - data: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - string: The generated SQL string
+//   - error: If the template execution fails
 func Generate[T any](query *QueryTemplate[T], data ...any) (string, error) {
 	var buf bytes.Buffer
 	templateData := any(nil)
@@ -175,6 +290,16 @@ func Generate[T any](query *QueryTemplate[T], data ...any) (string, error) {
 	return buf.String(), nil
 }
 
+// MustGenerate generates the SQL template with the given data and returns the generated SQL string.
+// It panics if an error occurs.
+//
+// Parameters:
+//   - query: The QueryTemplate to generate. Must not be nil.
+//   - data: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - string: The generated SQL string
+//   - error: If the template execution fails
 func MustGenerate[T any](query *QueryTemplate[T], data ...any) string {
 	sql, err := Generate(query, data...)
 	if err != nil {
@@ -183,6 +308,21 @@ func MustGenerate[T any](query *QueryTemplate[T], data ...any) string {
 	return sql
 }
 
+// PrepareContext prepares a QueryTemplate with the given context, database connection, and optional template data.
+// It returns a prepared statement and any error that occurred.
+//
+// The type parameter T specifies the result type, which must be a struct. See New[S] for more details.
+// The type parameter Q must be either *sql.DB or *sql.Tx.
+//
+// Parameters:
+//   - query: The QueryTemplate to prepare. Must not be nil.
+//   - ctx: The context for the query preparation. Used for cancellation and timeouts.
+//   - txOrDb: Database connection, can be either *sql.DB or *sql.Tx
+//   - data: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - *QueryStmt[T]: A prepared statement
+//   - error: If query preparation fails
 func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Context, txOrDb Q, data ...any) (*QueryStmt[T], error) {
 	// make sure the query is not nil
 	if query == nil {
@@ -226,11 +366,32 @@ func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Contex
 	return queryStmt, nil
 }
 
+// Prepare prepares a QueryTemplate with the given database connection and optional template data.
+// It returns a prepared statement and any error that occurred.
+//
+// The type parameter T specifies the result type, which must be a struct. See New[S] for more details.
+// The type parameter Q must be either *sql.DB or *sql.Tx.
+//
+// Parameters:
+//   - query: The QueryTemplate to prepare. Must not be nil.
+//   - db: Database connection, can be either *sql.DB or *sql.Tx
+//   - data: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - *QueryStmt[T]: A prepared statement
+//   - error: If query preparation fails
 func Prepare[T any, Q DbOrTx](tqlQuery *QueryTemplate[T], db Q, data ...any) (*QueryStmt[T], error) {
 	return PrepareContext(tqlQuery, context.Background(), db, data...)
 }
 
 // Parse parses the SQL string and extracts field information for scanning
+//
+// Parameters:
+//   - sql: The SQL string to parse
+//
+// Returns:
+//   - string: The parsed SQL string
+//   - [][]int: The indices of the fields that are selected
 func Parse[T any](sql string) (string, [][]int) {
 	var tmp T
 	tableOrTables := reflect.ValueOf(tmp).Type()
@@ -286,14 +447,40 @@ func Parse[T any](sql string) (string, [][]int) {
 	return sql, allIndices
 }
 
+// Generate generates the SQL template with the given data and returns the generated SQL string and any error that occurred.
+//
+// Parameters:
+//   - query: The QueryTemplate to generate. Must not be nil.
+//   - data: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - string: The generated SQL string
+//   - error: If the template execution fails
 func (query *QueryTemplate[T]) Generate(data ...any) (string, error) {
 	return Generate(query, data...)
 }
 
+// MustGenerate generates the SQL template with the given data and returns the generated SQL string.
+// It panics if an error occurs.
+//
+// Parameters:
+//   - query: The QueryTemplate to generate. Must not be nil.
+//   - data: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - string: The generated SQL string
+//   - error: If the template execution fails
 func (query *QueryTemplate[T]) MustGenerate(data ...any) string {
 	return MustGenerate(query, data...)
 }
 
+// Close closes the prepared statement and any error that occurred.
+//
+// Parameters:
+//   - query: The QueryStmt to close. Must not be nil.
+//
+// Returns:
+//   - error: If closing the prepared statement fails
 func (query *QueryStmt[T]) Close() error {
 	if query == nil {
 		log.Error("Close called on a nil query")
@@ -306,6 +493,17 @@ func (query *QueryStmt[T]) Close() error {
 	return nil
 }
 
+// ExecContext executes a prepared statement with the given context and optional template data.
+// It returns the result of the query execution and any error that occurred.
+//
+// Parameters:
+//   - query: The QueryStmt to execute. Must not be nil.
+//   - ctx: The context for the query execution. Used for cancellation and timeouts.
+//   - data: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - sql.Result: The result of the query execution
+//   - error: If query execution fails
 func (query *QueryStmt[T]) ExecContext(ctx context.Context, data ...any) (sql.Result, error) {
 	if query.prepared == nil {
 		log.ErrorContext(ctx, "ExecContext called on a nil prepared query")
@@ -314,10 +512,32 @@ func (query *QueryStmt[T]) ExecContext(ctx context.Context, data ...any) (sql.Re
 	return query.prepared.ExecContext(ctx, data...)
 }
 
+// Exec executes a prepared statement with the given database connection and optional template data.
+// It returns the result of the query execution and any error that occurred.
+//
+// Parameters:
+//   - query: The QueryStmt to execute. Must not be nil.
+//   - db: Database connection, can be either *sql.DB or *sql.Tx
+//   - data: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - sql.Result: The result of the query execution
+//   - error: If query execution fails
 func (query *QueryStmt[T]) Exec(data ...any) (sql.Result, error) {
 	return query.ExecContext(context.Background(), data...)
 }
 
+// QueryContext executes a prepared statement with the given context and optional template data.
+// It returns a slice of results of type T and any error that occurred.
+//
+// Parameters:
+//   - query: The QueryStmt to execute. Must not be nil.
+//   - ctx: The context for the query execution. Used for cancellation and timeouts.
+//   - data: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - []T: A slice of results of type T
+//   - error: If query execution fails
 func (query *QueryStmt[T]) QueryContext(ctx context.Context, data ...any) (results []T, err error) {
 	var scanDest T
 	scanDestValue := reflect.ValueOf(&scanDest).Elem()
@@ -340,11 +560,31 @@ func (query *QueryStmt[T]) QueryContext(ctx context.Context, data ...any) (resul
 	return results, nil
 }
 
+// Query executes a prepared statement with the given database connection and optional template data.
+// It returns a slice of results of type T and any error that occurred.
+//
+// Parameters:
+//   - query: The QueryStmt to execute. Must not be nil.
+//   - db: Database connection, can be either *sql.DB or *sql.Tx
+//   - data: Optional variadic parameters to pass to the query execution
+//
+// Returns:
+//   - []T: A slice of results of type T
+//   - error: If query execution fails
 func (query *QueryStmt[T]) Query(data ...any) (results []T, err error) {
 	return query.QueryContext(context.Background(), data...)
 }
 
 // parseTQLTag parses the tql struct tag options
+//
+// Parameters:
+//   - field: The struct field to parse
+//
+// Returns:
+//   - struct {
+//     omit  string
+//     field string
+//     }: The parsed struct tag options
 func parseTQLTag(field reflect.StructField) (results struct {
 	omit  string
 	field string
@@ -366,6 +606,14 @@ func parseTQLTag(field reflect.StructField) (results struct {
 	return results
 }
 
+// toSelectedField converts the qualified name to the selected field
+//
+// Parameters:
+//   - qualifiedName: The qualified name of the field
+//   - selectedFields: The selected fields
+//
+// Returns:
+//   - string: The selected field
 func toSelectedField(qualifiedName string, selectedFields []string) string {
 	for _, field := range selectedFields {
 		maybeAlias := strings.Split(field, " as ")
@@ -378,6 +626,14 @@ func toSelectedField(qualifiedName string, selectedFields []string) string {
 	return qualifiedName
 }
 
+// matchesContainsWords checks if the matches contain any of the words
+//
+// Parameters:
+//   - matches: The matches to check
+//   - words: The words to check for
+//
+// Returns:
+//   - bool: True if any of the words are found in the matches, false otherwise
 func matchesContainsWords(matches [][]string, words ...string) bool {
 	for _, match := range matches {
 		if containsWords(match[1], words...) {
@@ -387,6 +643,14 @@ func matchesContainsWords(matches [][]string, words ...string) bool {
 	return false
 }
 
+// containsWords checks if the source string contains any of the words
+//
+// Parameters:
+//   - source: The source string to check
+//   - words: The words to check for
+//
+// Returns:
+//   - bool: True if any of the words are found in the source string, false otherwise
 func containsWords(source string, words ...string) bool {
 	for _, word := range words {
 		regex, err := regexp.Compile(`(^|[^.])\b` + word)
@@ -401,6 +665,12 @@ func containsWords(source string, words ...string) bool {
 }
 
 // iterStructFields returns an iterator over the fields of a struct type
+//
+// Parameters:
+//   - reflectedType: The reflected type of the struct
+//
+// Returns:
+//   - iter.Seq[reflect.StructField]: An iterator over the fields of the struct
 func iterStructFields(reflectedType reflect.Type) iter.Seq[reflect.StructField] {
 	return iter.Seq[reflect.StructField](
 		func(yield func(reflect.StructField) bool) {
