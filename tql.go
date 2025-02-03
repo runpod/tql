@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"text/template"
+
+	"github.com/runpod/go-tql/sqlfmt"
 )
 
 var (
@@ -29,7 +31,9 @@ var (
 	cteRegex = regexp.MustCompile(`(?ms)(?:\bWITH\s+)?([a-zA-Z_][a-zA-Z0-9_]+)\s+AS\s*\((.*?)\)`)
 
 	// defaultFunctions contains the default template functions
-	defaultFunctions = Functions{}
+	defaultFunctions = Functions{
+		"mysqlquote": sqlfmt.Sprint,
+	}
 
 	// ErrNilQuery is returned when attempting to use a nil query
 	ErrNilQuery = errors.New("query is nil")

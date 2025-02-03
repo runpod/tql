@@ -83,7 +83,7 @@ func NeedsUTF8(s string) bool {
 func QuoteIfNeeded(scratch []byte, s string) []byte {
 	// check if the string is simple. if not, quote it.
 	if IsSimple(s) {
-		return append(scratch, s...)
+		return append(scratch, ("'" + s + "'")...)
 	}
 
 	return Quote(scratch, s)

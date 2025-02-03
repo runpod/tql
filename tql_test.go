@@ -3,19 +3,41 @@ package tql
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"log/slog"
 	"testing"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/go-sql-driver/mysql"
 )
 
 type Account struct {
 	Id int `tql:"id"`
 }
 
+func clearDb(db *sql.DB) {
+	rows, err := db.Query("SHOW TABLES")
+	if err != nil {
+		panic(fmt.Errorf("show tables: %w", err))
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var tableName string
+		if err := rows.Scan(&tableName); err != nil {
+			panic(fmt.Errorf("scan table name: %w", err))
+		}
+		dropStmt := fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName)
+		_, err := db.Exec(dropStmt)
+		if err != nil {
+			panic(fmt.Errorf("drop table %s: %w", tableName, err))
+		}
+	}
+	db.Exec("RESET BINARY LOGS AND GTIDS")
+}
+
 func mock(t testing.TB) *sql.DB {
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := sql.Open("mysql", "root:@tcp(localhost:3306)/runpod?multiStatements=true&parseTime=true")
+	clearDb(db)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,12 +320,12 @@ func TestWithTemplate(t *testing.T) {
 	type Results struct {
 		User User `tql:"omit=createdAt"`
 	}
-	query, err := New[User](`SELECT uuid, name FROM User WHERE User.createdAt > '{{ .createdAt }}'`)
+	query, err := New[User](`SELECT uuid, name FROM User WHERE User.name = '{{ .name }}'`)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	queryStmt, err := Prepare(query, db, Params{"createdAt": time.Now().Format("2006-01-02 15:04:05")})
+	queryStmt, err := Prepare(query, db, Params{"name": "John Doe"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +335,45 @@ func TestWithTemplate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(results) != 1 {
-		t.Fatal("expected 0 results, got", len(results))
+		t.Fatal("expected 1 result, got", len(results))
+	}
+}
+
+func TestSqlQuote(t *testing.T) {
+	db := mock(t)
+	var numUsersBefore int
+	if err := db.QueryRow("SELECT COUNT(*) FROM User").Scan(&numUsersBefore); err != nil {
+		t.Fatal(err)
+	}
+	if numUsersBefore == 0 {
+		t.Fatal("need users in the database to compare against, got no users")
+	}
+	type Results struct {
+		User User `tql:"omit=createdAt"`
+	}
+	query, err := New[User](`SELECT uuid, name FROM User WHERE User.name = {{ mysqlquote .name }}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "John Doe"
+	badInputs := []string{
+		name,
+		name + "'; DROP TABLE User; --",
+	}
+	for _, badInput := range badInputs {
+		queryStmt, err := Prepare(query, db, Params{"name": badInput})
+		if err != nil {
+			t.Fatal(err)
+		}
+		results, err := queryStmt.Query()
+		slog.Info("results", "results", results)
+	}
+	var numUsersAfter int
+	if err := db.QueryRow("SELECT COUNT(*) FROM User").Scan(&numUsersAfter); err != nil {
+		t.Fatal(err)
+	}
+	if numUsersBefore != numUsersAfter {
+		t.Fatalf("expected %d users, got %d", numUsersBefore, numUsersAfter)
 	}
 }
 
