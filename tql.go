@@ -12,7 +12,6 @@ import (
 	"maps"
 	"reflect"
 	"regexp"
-	"slices"
 	"strings"
 	"text/template"
 )
@@ -32,8 +31,8 @@ var (
 
 	// defaultFunctions contains the default template functions
 	defaultFunctions = Functions{
-		"named": func(name string, value any) any {
-			return "@" + name
+		"param": func(value any) any {
+			return "?"
 		},
 	}
 
@@ -94,7 +93,7 @@ type QueryStmt[T any] struct {
 	prepared *sql.Stmt
 	indices  [][]int
 	SQL      string
-	args     map[string]any
+	args     []any
 }
 
 // New creates a new QueryTemplate with the given SQL template and optional template functions.
@@ -294,18 +293,29 @@ func Generate[T any](query *QueryTemplate[T], queryStmt *QueryStmt[T], data ...a
 		return "", ErrNilQuery
 	}
 	// using a pointer to the args map here so we can instantiate it in place if it is nil
-	var args *map[string]any
+	var args *[]any
 	if queryStmt != nil {
 		args = &queryStmt.args
 	} else {
-		args = &map[string]any{}
+		args = &[]any{}
 	}
-	if *args == nil {
-		*args = map[string]any{}
+	if len(*args) == 0 {
+		*args = []any{}
 		query.template = query.template.Funcs(Functions{
-			"named": func(name string, value any) string {
-				queryStmt.args[name] = sql.Named(name, value)
-				return "@" + name
+			"param": func(value any) string {
+				if reflect.TypeOf(value).Kind() == reflect.Slice {
+					v := reflect.ValueOf(value)
+					placeholders := make([]string, v.Len())
+					for i := 0; i < v.Len(); i++ {
+						*args = append(*args, v.Index(i).Interface())
+						placeholders[i] = "?"
+					}
+					return "(" + strings.Join(placeholders, ",") + ")"
+				} else {
+
+					*args = append(*args, value)
+				}
+				return "?"
 			},
 		})
 	}
@@ -589,8 +599,7 @@ func (query *QueryStmt[T]) QueryContext(ctx context.Context, data ...any) (resul
 		field := scanDestValue.FieldByIndex(fieldIndex)
 		fields = append(fields, field.Addr().Interface())
 	}
-	args := slices.Collect(maps.Values(query.args))
-	rows, err := query.prepared.QueryContext(ctx, append(args, data...)...)
+	rows, err := query.prepared.QueryContext(ctx, append(query.args, data...)...)
 	if err != nil {
 		return results, errors.Join(ErrExecutingQuery, err)
 	}

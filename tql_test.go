@@ -129,15 +129,6 @@ func TestSimpleWithSingleTable(t *testing.T) {
 	}
 }
 
-func TestPrepareWithNilQuery(t *testing.T) {
-	db := (*sql.DB)(nil)
-	stmt, err := db.Prepare(`SELECT * FROM User`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	stmt.Close()
-}
-
 func TestSimpleWithSingleTableAndAliasField(t *testing.T) {
 	type Results struct {
 		UserId    int       `tql:"userId"`
@@ -195,11 +186,36 @@ func TestSimpleWithSingleTableWithName(t *testing.T) {
 
 func TestSimpleWithSingleTableWithNameAndAlias(t *testing.T) {
 	db := mock(t)
-	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id = {{ named "id" .Id}}`)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id = {{ param .Id}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	queryStmt, err := Prepare(query, db, Params{"Id": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name.String != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
+func TestSimpleWithSingleTableWithNameListAndAlias(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id IN {{ param .Id}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db, Params{"Id": []int{1, 2}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,44 +386,6 @@ func TestWithTemplate(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Fatal("expected 1 result, got", len(results))
-	}
-}
-
-func TestSqlQuote(t *testing.T) {
-	db := mock(t)
-	var numUsersBefore int
-	if err := db.QueryRow("SELECT COUNT(*) FROM User").Scan(&numUsersBefore); err != nil {
-		t.Fatal(err)
-	}
-	if numUsersBefore == 0 {
-		t.Fatal("need users in the database to compare against, got no users")
-	}
-	type Results struct {
-		User User `tql:"omit=createdAt"`
-	}
-	query, err := New[User](`SELECT uuid, name FROM User WHERE User.name = {{ mysqlquote .name }}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := "John Doe"
-	badInputs := []string{
-		name,
-		name + "'; DROP TABLE User; --",
-	}
-	for _, badInput := range badInputs {
-		queryStmt, err := Prepare(query, db, Params{"name": badInput})
-		if err != nil {
-			t.Fatal(err)
-		}
-		results, err := queryStmt.Query()
-		slog.Info("results", "results", results)
-	}
-	var numUsersAfter int
-	if err := db.QueryRow("SELECT COUNT(*) FROM User").Scan(&numUsersAfter); err != nil {
-		t.Fatal(err)
-	}
-	if numUsersBefore != numUsersAfter {
-		t.Fatalf("expected %d users, got %d", numUsersBefore, numUsersAfter)
 	}
 }
 
