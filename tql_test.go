@@ -194,19 +194,14 @@ func TestNestedQueryJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	accountSql, err := Generate(accountQuery, nil, Params{"Id": 1})
-	if err != nil {
-		t.Fatal(err)
-	}
 	query, err := New[struct{ UserId, AccountId int }](`SELECT User.id as userId, Account.id as accountId FROM User
-	 LEFT JOIN ({{ .AccountQuery }}) 
+	 LEFT JOIN ({{ tql .AccountQuery . }}) 
 	 AS Account ON Account.userId = User.id
 	where User.id = {{ .Id}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Log("query", query.MustGenerate(Params{"Id": 1, "AccountQuery": accountSql}))
-	queryStmt, err := Prepare(query, db, Params{"Id": 1, "AccountQuery": accountSql})
+	queryStmt, err := Prepare(query, db, Params{"Id": 1, "AccountQuery": accountQuery})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,19 +374,14 @@ func TestParamNestedQueryJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	accountSql, err := Generate(accountQuery, nil, Params{"Id": 1})
-	if err != nil {
-		t.Fatal(err)
-	}
 	query, err := New[struct{ UserId, AccountId int }](`SELECT User.id as userId, Account.id as accountId FROM User
-	 LEFT JOIN ({{ .AccountQuery }}) 
+	 LEFT JOIN ({{ tql .AccountQuery . }}) 
 	 AS Account ON Account.userId = User.id
 	where User.id = {{ param .Id}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Log("query", query.MustGenerate(Params{"Id": 1, "AccountQuery": accountSql}))
-	queryStmt, err := Prepare(query, db, Params{"Id": 1, "AccountQuery": accountSql})
+	queryStmt, err := Prepare(query, db, Params{"Id": 1, "AccountQuery": accountQuery})
 	if err != nil {
 		t.Fatal(err)
 	}
