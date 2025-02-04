@@ -107,6 +107,15 @@ func TestSimpleWithSingleTable(t *testing.T) {
 	}
 }
 
+func TestPrepareWithNilQuery(t *testing.T) {
+	db := (*sql.DB)(nil)
+	stmt, err := db.Prepare(`SELECT * FROM User`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt.Close()
+}
+
 func TestSimpleWithSingleTableAndAliasField(t *testing.T) {
 	type Results struct {
 		UserId    int       `tql:"userId"`
@@ -148,6 +157,31 @@ func TestSimpleWithSingleTableWithName(t *testing.T) {
 		t.Fatal(err)
 	}
 	results, err := queryStmt.Query(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name.String != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
+func TestSimpleWithSingleTableWithNameAndAlias(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id = {{ named "id" .Id}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db, Params{"Id": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
 	if err != nil {
 		t.Fatal(err)
 	}

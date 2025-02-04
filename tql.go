@@ -9,8 +9,10 @@ import (
 	"errors"
 	"iter"
 	"log/slog"
+	"maps"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"text/template"
 )
@@ -29,7 +31,11 @@ var (
 	cteRegex = regexp.MustCompile(`(?ms)(?:\bWITH\s+)?([a-zA-Z_][a-zA-Z0-9_]+)\s+AS\s*\((.*?)\)`)
 
 	// defaultFunctions contains the default template functions
-	defaultFunctions = Functions{}
+	defaultFunctions = Functions{
+		"named": func(name string, value any) any {
+			return "@" + name
+		},
+	}
 
 	// ErrNilQuery is returned when attempting to use a nil query
 	ErrNilQuery = errors.New("query is nil")
@@ -88,6 +94,7 @@ type QueryStmt[T any] struct {
 	prepared *sql.Stmt
 	indices  [][]int
 	SQL      string
+	args     map[string]any
 }
 
 // New creates a new QueryTemplate with the given SQL template and optional template functions.
@@ -129,8 +136,12 @@ type QueryStmt[T any] struct {
 func New[T any](sqlTemplate string, maybeFunctions ...Functions) (*QueryTemplate[T], error) {
 	funcs := defaultFunctions
 	if len(maybeFunctions) > 0 {
-		funcs = maybeFunctions[0]
+		funcs = maps.Clone(defaultFunctions)
+		for k, v := range maybeFunctions[0] {
+			funcs[k] = v
+		}
 	}
+
 	var s T
 	v := reflect.ValueOf(s)
 	if v.Kind() != reflect.Struct {
@@ -277,11 +288,28 @@ func Exec[T any, Q DbOrTx](query *QueryTemplate[T], db Q, data ...any) (sql.Resu
 // Returns:
 //   - string: The generated SQL string
 //   - error: If the template execution fails
-func Generate[T any](query *QueryTemplate[T], data ...any) (string, error) {
+func Generate[T any](query *QueryTemplate[T], queryStmt *QueryStmt[T], data ...any) (string, error) {
 	if query == nil {
 		log.Error("Generate called on a nil query")
 		return "", ErrNilQuery
 	}
+	// using a pointer to the args map here so we can instantiate it in place if it is nil
+	var args *map[string]any
+	if queryStmt != nil {
+		args = &queryStmt.args
+	} else {
+		args = &map[string]any{}
+	}
+	if *args == nil {
+		*args = map[string]any{}
+		query.template = query.template.Funcs(Functions{
+			"named": func(name string, value any) string {
+				queryStmt.args[name] = sql.Named(name, value)
+				return "@" + name
+			},
+		})
+	}
+	clear(*args)
 	var buf bytes.Buffer
 	templateData := any(nil)
 	if len(data) > 0 {
@@ -303,9 +331,9 @@ func Generate[T any](query *QueryTemplate[T], data ...any) (string, error) {
 //
 // Returns:
 //   - string: The generated SQL string or an empty string if the template execution fails
-func MustGenerate[T any](query *QueryTemplate[T], data ...any) string {
+func MustGenerate[T any](query *QueryTemplate[T], queryStmt *QueryStmt[T], data ...any) string {
 
-	sql, err := Generate(query, data...)
+	sql, err := Generate(query, queryStmt, data...)
 	if err != nil {
 		panic(err)
 	}
@@ -343,18 +371,18 @@ func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Contex
 		log.ErrorContext(ctx, "Prepare called with a nil tx or db")
 		return nil, errors.Join(ErrPreparingQuery, ErrPreparingQuery)
 	}
-	generatedSQL, err := Generate(query, data...)
+	queryStmt := &QueryStmt[T]{template: query}
+	generatedSQL, err := Generate(query, queryStmt, data...)
 	if err != nil {
 		log.ErrorContext(ctx, "Error parsing sql template", "error", err)
 		return nil, errors.Join(ErrPreparingQuery, err)
 	}
 	transformedSQL, indices := Parse[T](generatedSQL)
-	var stmt *sql.Stmt
 	switch db := any(txOrDb).(type) {
 	case *sql.DB:
-		stmt, err = db.PrepareContext(ctx, transformedSQL)
+		queryStmt.prepared, err = db.PrepareContext(ctx, transformedSQL)
 	case *sql.Tx:
-		stmt, err = db.PrepareContext(ctx, transformedSQL)
+		queryStmt.prepared, err = db.PrepareContext(ctx, transformedSQL)
 	default:
 		log.ErrorContext(ctx, "Prepare called with an invalid queryable", "error", ErrPreparingQuery)
 		return nil, errors.Join(ErrPreparingQuery, ErrInvalidQueryable)
@@ -363,7 +391,8 @@ func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Contex
 		log.ErrorContext(ctx, "failed to prepare query", "error", err)
 		return nil, errors.Join(ErrPreparingQuery, err)
 	}
-	queryStmt := &QueryStmt[T]{template: query, indices: indices, SQL: transformedSQL, prepared: stmt}
+	queryStmt.indices = indices
+	queryStmt.SQL = transformedSQL
 	return queryStmt, nil
 }
 
@@ -459,7 +488,7 @@ func Parse[T any](sql string) (string, [][]int) {
 //   - string: The generated SQL string
 //   - error: If the template execution fails
 func (query *QueryTemplate[T]) Generate(data ...any) (string, error) {
-	return Generate(query, data...)
+	return Generate(query, nil, data...)
 }
 
 // MustGenerate generates the SQL template with the given data and returns the generated SQL string.
@@ -473,7 +502,7 @@ func (query *QueryTemplate[T]) Generate(data ...any) (string, error) {
 //   - string: The generated SQL string
 //   - error: If the template execution fails
 func (query *QueryTemplate[T]) MustGenerate(data ...any) string {
-	return MustGenerate(query, data...)
+	return MustGenerate(query, nil, data...)
 }
 
 // Close closes the prepared statement and any error that occurred.
@@ -560,7 +589,8 @@ func (query *QueryStmt[T]) QueryContext(ctx context.Context, data ...any) (resul
 		field := scanDestValue.FieldByIndex(fieldIndex)
 		fields = append(fields, field.Addr().Interface())
 	}
-	rows, err := query.prepared.QueryContext(ctx, data...)
+	args := slices.Collect(maps.Values(query.args))
+	rows, err := query.prepared.QueryContext(ctx, append(args, data...)...)
 	if err != nil {
 		return results, errors.Join(ErrExecutingQuery, err)
 	}
