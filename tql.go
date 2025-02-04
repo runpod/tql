@@ -15,8 +15,6 @@ import (
 	"slices"
 	"strings"
 	"text/template"
-
-	"github.com/runpod/go-tql/sqlfmt"
 )
 
 var (
