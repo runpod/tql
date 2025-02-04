@@ -36,7 +36,11 @@ func clearDb(db *sql.DB) {
 }
 
 func mock(t testing.TB) *sql.DB {
-	db, err := sql.Open("mysql", "root:@tcp(localhost:3306)/runpod?multiStatements=true&parseTime=true")
+	host := "localhost"
+	if host != "localhost" && host != "127.0.0.1" {
+		t.Fatal("test suite clears existing db state. Please run tests only on local db where you don't care about the data")
+	}
+	db, err := sql.Open("mysql", fmt.Sprintf("root:@tcp(%s:3306)/runpod?multiStatements=true&parseTime=true", host))
 	clearDb(db)
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +188,7 @@ func TestSimpleWithSingleTableWithName(t *testing.T) {
 	}
 }
 
-func TestSimpleWithSingleTableWithNameAndAlias(t *testing.T) {
+func TestParamSimple(t *testing.T) {
 	db := mock(t)
 	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id = {{ param .Id}}`)
 	if err != nil {
@@ -209,13 +213,88 @@ func TestSimpleWithSingleTableWithNameAndAlias(t *testing.T) {
 	}
 }
 
-func TestSimpleWithSingleTableWithNameListAndAlias(t *testing.T) {
+func TestParamList(t *testing.T) {
 	db := mock(t)
 	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id IN {{ param .Id}}`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	queryStmt, err := Prepare(query, db, Params{"Id": []int{1, 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name.String != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
+func TestParamMultiple(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id = {{ param .Id}} and User.name = {{ param .Name}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db, Params{"Id": 1, "Name": "John Doe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name.String != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
+func TestMixedParamAndStringInterp(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id = {{ .Id }} and User.name = {{ param .Name}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db, Params{"Id": 1, "Name": "John Doe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name.String != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
+func TestParamMultipleBeforeAfterList(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id IN {{ param .Ids}} and User.name = {{ param .Name}} and User.id IN {{ param .Ids}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db, Params{"Ids": []int{1, 2}, "Name": "John Doe"})
 	if err != nil {
 		t.Fatal(err)
 	}
