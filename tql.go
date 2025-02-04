@@ -299,7 +299,7 @@ func Generate[T any](query *QueryTemplate[T], queryStmt *QueryStmt[T], data ...a
 	} else {
 		args = &[]any{}
 	}
-	if len(*args) == 0 {
+	if *args == nil {
 		*args = []any{}
 		query.template = query.template.Funcs(Functions{
 			"param": func(value any) string {
@@ -381,7 +381,7 @@ func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Contex
 		log.ErrorContext(ctx, "Prepare called with a nil tx or db")
 		return nil, errors.Join(ErrPreparingQuery, ErrPreparingQuery)
 	}
-	queryStmt := &QueryStmt[T]{template: query}
+	queryStmt := &QueryStmt[T]{template: query, args: nil}
 	generatedSQL, err := Generate(query, queryStmt, data...)
 	if err != nil {
 		log.ErrorContext(ctx, "Error parsing sql template", "error", err)
