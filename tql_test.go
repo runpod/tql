@@ -338,6 +338,44 @@ func TestNestedSelect(t *testing.T) {
 	log.Info("results", "results", results)
 }
 
+func TestParamPreventsInjection(t *testing.T) {
+	db := mock(t)
+	var numUsersBefore int
+	if err := db.QueryRow("SELECT COUNT(*) FROM User").Scan(&numUsersBefore); err != nil {
+		t.Fatal(err)
+	}
+	if numUsersBefore == 0 {
+		t.Fatal("need users in the database to compare against, got no users")
+	}
+	type Results struct {
+		User User `tql:"omit=createdAt"`
+	}
+	query, err := New[User](`SELECT uuid, name FROM User WHERE User.name = {{ param .name }}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "John Doe"
+	badInputs := []string{
+		name,
+		name + "'; DROP TABLE User; --",
+	}
+	for _, badInput := range badInputs {
+		queryStmt, err := Prepare(query, db, Params{"name": badInput})
+		if err != nil {
+			t.Fatal(err)
+		}
+		results, err := queryStmt.Query()
+		slog.Info("results", "results", results)
+	}
+	var numUsersAfter int
+	if err := db.QueryRow("SELECT COUNT(*) FROM User").Scan(&numUsersAfter); err != nil {
+		t.Fatal(err)
+	}
+	if numUsersBefore != numUsersAfter {
+		t.Fatalf("expected %d users, got %d", numUsersBefore, numUsersAfter)
+	}
+}
+
 func TestNestedSelectWithAlias(t *testing.T) {
 	db := mock(t)
 	type Results struct {
