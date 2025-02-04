@@ -9,12 +9,11 @@ import (
 	"errors"
 	"iter"
 	"log/slog"
+	"maps"
 	"reflect"
 	"regexp"
 	"strings"
 	"text/template"
-
-	"github.com/runpod/go-tql/sqlfmt"
 )
 
 var (
@@ -32,7 +31,14 @@ var (
 
 	// defaultFunctions contains the default template functions
 	defaultFunctions = Functions{
-		"mysqlquote": sqlfmt.Sprint,
+		"param": func(value any) any {
+			return "?"
+		},
+		"tql": func(query any, args ...any) any {
+			slog.Info("tql", "query", query, "args", args)
+
+			return query
+		},
 	}
 
 	// ErrNilQuery is returned when attempting to use a nil query
@@ -77,8 +83,8 @@ type DbOrTx interface {
 
 // Template is an interface that represents a template that can be generated
 type Template interface {
-	Generate(data ...any) (string, error)
-	MustGenerate(data ...any) string
+	Generate(maybeTemplateParams ...any) (string, []any, error)
+	MustGenerate(maybeTemplateParams ...any) (string, []any)
 }
 
 // QueryTemplate is a struct that represents a template that can be generated
@@ -88,10 +94,11 @@ type QueryTemplate[T any] struct {
 
 // QueryStmt is a struct that represents a prepared statement that can be executed
 type QueryStmt[T any] struct {
-	template *QueryTemplate[T]
-	prepared *sql.Stmt
-	indices  [][]int
-	SQL      string
+	template  *QueryTemplate[T]
+	prepared  *sql.Stmt
+	indices   [][]int
+	SQL       string
+	sqlParams []any
 }
 
 // New creates a new QueryTemplate with the given SQL template and optional template functions.
@@ -133,8 +140,12 @@ type QueryStmt[T any] struct {
 func New[T any](sqlTemplate string, maybeFunctions ...Functions) (*QueryTemplate[T], error) {
 	funcs := defaultFunctions
 	if len(maybeFunctions) > 0 {
-		funcs = maybeFunctions[0]
+		funcs = maps.Clone(defaultFunctions)
+		for k, v := range maybeFunctions[0] {
+			funcs[k] = v
+		}
 	}
+
 	var s T
 	v := reflect.ValueOf(s)
 	if v.Kind() != reflect.Struct {
@@ -281,21 +292,57 @@ func Exec[T any, Q DbOrTx](query *QueryTemplate[T], db Q, data ...any) (sql.Resu
 // Returns:
 //   - string: The generated SQL string
 //   - error: If the template execution fails
-func Generate[T any](query *QueryTemplate[T], data ...any) (string, error) {
-	if query == nil {
+func Generate[T any](sqlTemplate *template.Template, data ...any) (string, []any, error) {
+	if sqlTemplate == nil {
 		log.Error("Generate called on a nil query")
-		return "", ErrNilQuery
+		return "", nil, ErrNilQuery
 	}
+	// using a pointer to the sqlParams map here so we can instantiate it in place if it is nil
+	sqlParams := &[]any{}
+	sqlTemplate.Funcs(Functions{
+		"param": func(value any) string {
+			if reflect.TypeOf(value).Kind() == reflect.Slice {
+				v := reflect.ValueOf(value)
+				placeholders := make([]string, v.Len())
+				for i := 0; i < v.Len(); i++ {
+					*sqlParams = append(*sqlParams, v.Index(i).Interface())
+					placeholders[i] = "?"
+				}
+				return "(" + strings.Join(placeholders, ",") + ")"
+			} else {
+
+				*sqlParams = append(*sqlParams, value)
+			}
+			return "?"
+		},
+		"tql": func(maybeQuery any, params ...any) any {
+			query, ok := maybeQuery.(Template)
+			if !ok {
+				panic(template.ExecError{
+					Err: errors.New("tql: expected a Template, got " + reflect.TypeOf(maybeQuery).String()),
+				})
+			}
+			sql, subSqlParams, err := query.Generate(params...)
+			if err != nil {
+				panic(template.ExecError{
+					Err: err,
+				})
+			}
+			*sqlParams = append(*sqlParams, subSqlParams...)
+			return sql
+		},
+	})
+
 	var buf bytes.Buffer
 	templateData := any(nil)
 	if len(data) > 0 {
 		templateData = data[0]
 	}
-	if err := query.template.Execute(&buf, templateData); err != nil {
+	if err := sqlTemplate.Execute(&buf, templateData); err != nil {
 		log.Error("error executing template", "error", err)
-		return "", errors.Join(ErrPreparingQuery, err)
+		return "", nil, errors.Join(ErrPreparingQuery, err)
 	}
-	return buf.String(), nil
+	return buf.String(), *sqlParams, nil
 }
 
 // MustGenerate generates the SQL template with the given data and returns the generated SQL string.
@@ -307,13 +354,12 @@ func Generate[T any](query *QueryTemplate[T], data ...any) (string, error) {
 //
 // Returns:
 //   - string: The generated SQL string or an empty string if the template execution fails
-func MustGenerate[T any](query *QueryTemplate[T], data ...any) string {
-
-	sql, err := Generate(query, data...)
+func MustGenerate[T any](sqlTemplate *template.Template, data ...any) (string, []any) {
+	sql, params, err := Generate[T](sqlTemplate, data...)
 	if err != nil {
 		panic(err)
 	}
-	return sql
+	return sql, params
 }
 
 // PrepareContext prepares a QueryTemplate with the given context, database connection, and optional template data.
@@ -347,7 +393,12 @@ func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Contex
 		log.ErrorContext(ctx, "Prepare called with a nil tx or db")
 		return nil, errors.Join(ErrPreparingQuery, ErrPreparingQuery)
 	}
-	generatedSQL, err := Generate(query, data...)
+	template, err := query.template.Clone()
+	if err != nil {
+		log.ErrorContext(ctx, "Error cloning template", "error", err)
+		return nil, errors.Join(ErrPreparingQuery, err)
+	}
+	generatedSQL, sqlParams, err := Generate[T](template, data...)
 	if err != nil {
 		log.ErrorContext(ctx, "Error parsing sql template", "error", err)
 		return nil, errors.Join(ErrPreparingQuery, err)
@@ -367,7 +418,8 @@ func PrepareContext[T any, Q DbOrTx](query *QueryTemplate[T], ctx context.Contex
 		log.ErrorContext(ctx, "failed to prepare query", "error", err)
 		return nil, errors.Join(ErrPreparingQuery, err)
 	}
-	queryStmt := &QueryStmt[T]{template: query, indices: indices, SQL: transformedSQL, prepared: stmt}
+	queryStmt := &QueryStmt[T]{template: query, indices: indices, SQL: transformedSQL, prepared: stmt, sqlParams: sqlParams}
+
 	return queryStmt, nil
 }
 
@@ -457,13 +509,18 @@ func Parse[T any](sql string) (string, [][]int) {
 //
 // Parameters:
 //   - query: The QueryTemplate to generate. Must not be nil.
+//   - args: The arguments that will be passed to sql.Exec or sql.Query
 //   - data: Optional variadic parameters to pass to the query execution
 //
 // Returns:
 //   - string: The generated SQL string
 //   - error: If the template execution fails
-func (query *QueryTemplate[T]) Generate(data ...any) (string, error) {
-	return Generate(query, data...)
+func (query *QueryTemplate[T]) Generate(data ...any) (string, []any, error) {
+	sqlTemplate, err := query.template.Clone()
+	if err != nil {
+		return "", nil, err
+	}
+	return Generate[T](sqlTemplate, data...)
 }
 
 // MustGenerate generates the SQL template with the given data and returns the generated SQL string.
@@ -476,8 +533,12 @@ func (query *QueryTemplate[T]) Generate(data ...any) (string, error) {
 // Returns:
 //   - string: The generated SQL string
 //   - error: If the template execution fails
-func (query *QueryTemplate[T]) MustGenerate(data ...any) string {
-	return MustGenerate(query, data...)
+func (query *QueryTemplate[T]) MustGenerate(data ...any) (string, []any) {
+	sqlTemplate, err := query.template.Clone()
+	if err != nil {
+		panic(err)
+	}
+	return MustGenerate[T](sqlTemplate, data...)
 }
 
 // Close closes the prepared statement and any error that occurred.
@@ -564,7 +625,7 @@ func (query *QueryStmt[T]) QueryContext(ctx context.Context, data ...any) (resul
 		field := scanDestValue.FieldByIndex(fieldIndex)
 		fields = append(fields, field.Addr().Interface())
 	}
-	rows, err := query.prepared.QueryContext(ctx, data...)
+	rows, err := query.prepared.QueryContext(ctx, append(query.sqlParams, data...)...)
 	if err != nil {
 		return results, errors.Join(ErrExecutingQuery, err)
 	}

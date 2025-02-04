@@ -36,7 +36,11 @@ func clearDb(db *sql.DB) {
 }
 
 func mock(t testing.TB) *sql.DB {
-	db, err := sql.Open("mysql", "root:@tcp(localhost:3306)/runpod?multiStatements=true&parseTime=true")
+	host := "localhost"
+	if host != "localhost" && host != "127.0.0.1" {
+		t.Fatal("test suite clears existing db state. Please run tests only on local db where you don't care about the data")
+	}
+	db, err := sql.Open("mysql", fmt.Sprintf("root:@tcp(%s:3306)/runpod?multiStatements=true&parseTime=true", host))
 	clearDb(db)
 	if err != nil {
 		t.Fatal(err)
@@ -184,6 +188,214 @@ func TestSimpleWithSingleTableWithName(t *testing.T) {
 	}
 }
 
+func TestNestedQueryJoin(t *testing.T) {
+	db := mock(t)
+	accountQuery, err := New[struct{ Id, UserId int }](`SELECT Account.id as Id, Account.userId as UserId from Account where Account.userId = {{ .Id}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := New[struct{ UserId, AccountId int }](`SELECT User.id as userId, Account.id as accountId FROM User
+	 LEFT JOIN ({{ tql .AccountQuery . }}) 
+	 AS Account ON Account.userId = User.id
+	where User.id = {{ .Id}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db, Params{"Id": 1, "AccountQuery": accountQuery})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].UserId != 1 {
+		t.Fatal("expected id 1, got", results[0].UserId)
+	}
+}
+
+func TestParamSimple(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id = {{ param .Id}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db, Params{"Id": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name.String != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
+func TestParamPointer(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.name = {{ param .Name}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "John Doe"
+	queryStmt, err := Prepare(query, db, Params{"Name": &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name.String != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
+func TestParamList(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id IN {{ param .Id}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db, Params{"Id": []int{1, 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name.String != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
+func TestParamMultiple(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id = {{ param .Id}} and User.name = {{ param .Name}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db, Params{"Id": 1, "Name": "John Doe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name.String != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
+func TestMixedParamAndStringInterp(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id = {{ .Id }} and User.name = {{ param .Name}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db, Params{"Id": 1, "Name": "John Doe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name.String != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
+func TestParamMultipleBeforeAfterList(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id IN {{ param .Ids}} and User.name = {{ param .Name}} and User.id IN {{ param .Ids}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db, Params{"Ids": []int{1, 2}, "Name": "John Doe"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name.String != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
+func TestParamNestedQueryJoin(t *testing.T) {
+	db := mock(t)
+	accountQuery, err := New[struct{ Id, UserId int }](`SELECT Account.id as Id, Account.userId as UserId from Account where Account.userId = {{ param .Id}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := New[struct{ UserId, AccountId int }](`SELECT User.id as userId, Account.id as accountId FROM User
+	 LEFT JOIN ({{ tql .AccountQuery . }}) 
+	 AS Account ON Account.userId = User.id
+	where User.id = {{ param .Id}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db, Params{"Id": 1, "AccountQuery": accountQuery})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].UserId != 1 {
+		t.Fatal("expected id 1, got", results[0].UserId)
+	}
+}
 func TestWithOmitField(t *testing.T) {
 	db := mock(t)
 	type Results struct {
@@ -288,6 +500,44 @@ func TestNestedSelect(t *testing.T) {
 	log.Info("results", "results", results)
 }
 
+func TestParamPreventsInjection(t *testing.T) {
+	db := mock(t)
+	var numUsersBefore int
+	if err := db.QueryRow("SELECT COUNT(*) FROM User").Scan(&numUsersBefore); err != nil {
+		t.Fatal(err)
+	}
+	if numUsersBefore == 0 {
+		t.Fatal("need users in the database to compare against, got no users")
+	}
+	type Results struct {
+		User User `tql:"omit=createdAt"`
+	}
+	query, err := New[User](`SELECT uuid, name FROM User WHERE User.name = {{ param .name }}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "John Doe"
+	badInputs := []string{
+		name,
+		name + "'; DROP TABLE User; --",
+	}
+	for _, badInput := range badInputs {
+		queryStmt, err := Prepare(query, db, Params{"name": badInput})
+		if err != nil {
+			t.Fatal(err)
+		}
+		results, err := queryStmt.Query()
+		slog.Info("results", "results", results)
+	}
+	var numUsersAfter int
+	if err := db.QueryRow("SELECT COUNT(*) FROM User").Scan(&numUsersAfter); err != nil {
+		t.Fatal(err)
+	}
+	if numUsersBefore != numUsersAfter {
+		t.Fatalf("expected %d users, got %d", numUsersBefore, numUsersAfter)
+	}
+}
+
 func TestNestedSelectWithAlias(t *testing.T) {
 	db := mock(t)
 	type Results struct {
@@ -336,44 +586,6 @@ func TestWithTemplate(t *testing.T) {
 	}
 	if len(results) != 1 {
 		t.Fatal("expected 1 result, got", len(results))
-	}
-}
-
-func TestSqlQuote(t *testing.T) {
-	db := mock(t)
-	var numUsersBefore int
-	if err := db.QueryRow("SELECT COUNT(*) FROM User").Scan(&numUsersBefore); err != nil {
-		t.Fatal(err)
-	}
-	if numUsersBefore == 0 {
-		t.Fatal("need users in the database to compare against, got no users")
-	}
-	type Results struct {
-		User User `tql:"omit=createdAt"`
-	}
-	query, err := New[User](`SELECT uuid, name FROM User WHERE User.name = {{ mysqlquote .name }}`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	name := "John Doe"
-	badInputs := []string{
-		name,
-		name + "'; DROP TABLE User; --",
-	}
-	for _, badInput := range badInputs {
-		queryStmt, err := Prepare(query, db, Params{"name": badInput})
-		if err != nil {
-			t.Fatal(err)
-		}
-		results, err := queryStmt.Query()
-		slog.Info("results", "results", results)
-	}
-	var numUsersAfter int
-	if err := db.QueryRow("SELECT COUNT(*) FROM User").Scan(&numUsersAfter); err != nil {
-		t.Fatal(err)
-	}
-	if numUsersBefore != numUsersAfter {
-		t.Fatalf("expected %d users, got %d", numUsersBefore, numUsersAfter)
 	}
 }
 
