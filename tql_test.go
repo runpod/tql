@@ -188,6 +188,40 @@ func TestSimpleWithSingleTableWithName(t *testing.T) {
 	}
 }
 
+func TestNestedQueryJoin(t *testing.T) {
+	db := mock(t)
+	accountQuery, err := New[struct{ Id, UserId int }](`SELECT Account.id as Id, Account.userId as UserId from Account where Account.userId = {{ .Id}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountSql, err := Generate(accountQuery, nil, Params{"Id": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := New[struct{ UserId, AccountId int }](`SELECT User.id as userId, Account.id as accountId FROM User
+	 LEFT JOIN ({{ .AccountQuery }}) 
+	 AS Account ON Account.userId = User.id
+	where User.id = {{ .Id}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log("query", query.MustGenerate(Params{"Id": 1, "AccountQuery": accountSql}))
+	queryStmt, err := Prepare(query, db, Params{"Id": 1, "AccountQuery": accountSql})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].UserId != 1 {
+		t.Fatal("expected id 1, got", results[0].UserId)
+	}
+}
+
 func TestParamSimple(t *testing.T) {
 	db := mock(t)
 	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id = {{ param .Id}}`)
@@ -195,6 +229,32 @@ func TestParamSimple(t *testing.T) {
 		t.Fatal(err)
 	}
 	queryStmt, err := Prepare(query, db, Params{"Id": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name.String != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
+func TestParamPointer(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.name = {{ param .Name}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "John Doe"
+	queryStmt, err := Prepare(query, db, Params{"Name": &name})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,6 +373,39 @@ func TestParamMultipleBeforeAfterList(t *testing.T) {
 	}
 }
 
+func TestParamNestedQueryJoin(t *testing.T) {
+	db := mock(t)
+	accountQuery, err := New[struct{ Id, UserId int }](`SELECT Account.id as Id, Account.userId as UserId from Account where Account.userId = {{ param .Id}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accountSql, err := Generate(accountQuery, nil, Params{"Id": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query, err := New[struct{ UserId, AccountId int }](`SELECT User.id as userId, Account.id as accountId FROM User
+	 LEFT JOIN ({{ .AccountQuery }}) 
+	 AS Account ON Account.userId = User.id
+	where User.id = {{ param .Id}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log("query", query.MustGenerate(Params{"Id": 1, "AccountQuery": accountSql}))
+	queryStmt, err := Prepare(query, db, Params{"Id": 1, "AccountQuery": accountSql})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].UserId != 1 {
+		t.Fatal("expected id 1, got", results[0].UserId)
+	}
+}
 func TestWithOmitField(t *testing.T) {
 	db := mock(t)
 	type Results struct {
