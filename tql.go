@@ -580,7 +580,7 @@ func (query *QueryStmt[T]) ExecContext(ctx context.Context, data ...any) (sql.Re
 		log.ErrorContext(ctx, "ExecContext called on a nil prepared query")
 		return nil, ErrNilStmt
 	}
-	return query.prepared.ExecContext(ctx, data...)
+	return query.prepared.ExecContext(ctx, append(query.sqlParams, data...)...)
 }
 
 // Exec executes a prepared statement with the given database connection and optional template data.
