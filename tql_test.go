@@ -268,6 +268,31 @@ func TestParamPointer(t *testing.T) {
 	}
 }
 
+func TestParamPattern(t *testing.T) {
+	db := mock(t)
+	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.name LIKE {{ param .Name}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryStmt, err := Prepare(query, db, Params{"Name": "%John Doe%"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	results, err := queryStmt.Query()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatal("expected 1 result, got", len(results))
+	}
+	if results[0].Id != 1 {
+		t.Fatal("expected id 1, got", results[0].Id)
+	}
+	if results[0].Name.String != "John Doe" {
+		t.Fatal("expected name John Doe, got", results[0].Name)
+	}
+}
+
 func TestParamList(t *testing.T) {
 	db := mock(t)
 	query, err := New[User](`SELECT User.id, User.name, User.createdAt FROM User where User.id IN {{ param .Id}}`)
